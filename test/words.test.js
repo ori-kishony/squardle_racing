@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { findPath, validateWord } from "../src/words.js";
+import { findPath, validateWord, accuracyFor, hurtsAccuracy } from "../src/words.js";
 import { acronymFor } from "../src/db.js";
 
 const GRID = ["T", "E", "T", "A", "H", "R", "L", "U", "G"];
@@ -50,5 +50,21 @@ describe("acronymFor", () => {
   it("uses initials", () => {
     assert.equal(acronymFor("Anna Karen"), "AK");
     assert.equal(acronymFor("bob"), "B");
+  });
+});
+
+describe("accuracy", () => {
+  it("1 required + 1 invalid = 50%", () => {
+    assert.equal(accuracyFor(1, 1), 0.5);
+  });
+  it("empty = 100%", () => {
+    assert.equal(accuracyFor(0, 0), 1);
+  });
+  it("only not-in-list hurts", () => {
+    assert.equal(hurtsAccuracy("not-in-list"), true);
+    assert.equal(hurtsAccuracy("too-short"), false);
+    assert.equal(hurtsAccuracy("already"), false);
+    assert.equal(hurtsAccuracy("no-path"), false);
+    assert.equal(hurtsAccuracy("empty"), false);
   });
 });

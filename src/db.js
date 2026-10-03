@@ -65,6 +65,15 @@ CREATE TABLE IF NOT EXISTS king_history (
 );
 `);
 
+// Accuracy tracking: wrong guesses (only "not-in-list" hurts, like the
+// original — too-short / already-found / bonus never count against you).
+// Older DBs need the column added.
+try {
+  db.exec("ALTER TABLE race_players ADD COLUMN invalid_guesses INTEGER NOT NULL DEFAULT 0");
+} catch {
+  /* column already exists */
+}
+
 export function acronymFor(nickname) {
   const parts = nickname.trim().split(/[\s._-]+/).filter(Boolean);
   const letters = parts.map((p) => p[0]).join("").toUpperCase();

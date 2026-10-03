@@ -133,3 +133,17 @@ export function validateWord({ grid, required, bonus, word, alreadyFound }) {
   if (!path) return { ok: false, reason: "no-path", isBonus };
   return { ok: true, word: w, isBonus, path };
 }
+
+/** Original-style accuracy: requiredFound / (requiredFound + invalid).
+ *  Only "not-in-list" submissions hurt; too-short / already / bonus don't.
+ *  Returns 1 when nothing submitted yet. */
+export function accuracyFor(requiredFound, invalidGuesses) {
+  const denom = (requiredFound | 0) + (invalidGuesses | 0);
+  if (!denom) return 1;
+  return requiredFound / denom;
+}
+
+/** Should this reject reason count against accuracy? (original rule) */
+export function hurtsAccuracy(reason) {
+  return reason === "not-in-list";
+}

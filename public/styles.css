@@ -77,8 +77,20 @@ button.danger { background:#f7e3e3; color:#a33; }
 #foundGroups { display:flex; flex-direction:column; gap:10px; }
 .foundGroup h4 { margin:6px 0 4px; font-size:.85rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
 .wordChips { display:flex; flex-wrap:wrap; gap:6px; }
-.wordChip { background:var(--chip); border-radius:8px; padding:4px 10px; font-weight:600; font-size:.95rem; }
+.wordChip { background:var(--chip); border-radius:8px; padding:4px 10px; font-weight:600; font-size:.95rem; cursor:pointer; border:0; color:inherit; font-family:inherit; }
 .wordChip.bonus { background:var(--bonus); }
+.wordTabs { display:flex; gap:6px; align-items:center; margin-bottom:4px; }
+.tab { background:#e9e4d6; border-radius:8px; padding:4px 10px; font-size:.85rem; font-weight:700; }
+.tab.on { background:var(--ink); color:#fff; }
+.spacer { flex:1; }
+.accChip { font-size:.8rem; background:#eef2ff; border:1px solid #c7d2fe; border-radius:8px; padding:2px 8px; color:#3730a3; }
+.lenSummary { display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 8px; }
+.lenChip { background:#f1ede1; border-radius:8px; padding:2px 8px; font-size:.8rem; font-weight:700; color:var(--muted); }
+.lenChip.done { background:#dcfce7; color:#166534; }
+.linklike { background:none; border:0; padding:0; cursor:pointer; color:inherit; font:inherit; }
+#defModal { position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; z-index:20; padding:16px; }
+#defCard { background:var(--card); border-radius:14px; padding:16px; max-width:420px; width:100%; }
+#tiebreakSel { margin-left:6px; padding:6px; border-radius:8px; border:1px solid #cfc8b4; }
 .row { display:flex; gap:8px; flex-wrap:wrap; }
 .share { background:#fff; border:1px dashed var(--acc); border-radius:10px; padding:10px; white-space:pre-wrap; }
 .foot { text-align:center; color:var(--muted); font-size:.8rem; }

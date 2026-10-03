@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, acronymFor } from "./db.js";
-import { validateWord, gridHintCounts, hintThresholds } from "./words.js";
+import { validateWord, gridHintCounts, hintThresholds, accuracyFor } from "./words.js";
 import {
   getPuzzle,
   ensurePuzzleFor,
@@ -37,32 +37,57 @@ const getRace = (id) => db.prepare("SELECT * FROM races WHERE id = ?").get(id);
 const racePlayers = (raceId) =>
   db
     .prepare(
-      `SELECT p.id, p.nickname, p.acronym, rp.ready, rp.finished_at AS finishedAt, rp.gave_up AS gaveUp
+      `SELECT p.id, p.nickname, p.acronym, rp.ready, rp.finished_at AS finishedAt, rp.gave_up AS gaveUp,
+        COALESCE(rp.invalid_guesses, 0) AS invalidGuesses
        FROM race_players rp JOIN players p ON p.id = rp.player_id WHERE rp.race_id = ?`
     )
     .all(raceId);
-const foundCount = (raceId, playerId) =>
-  db
-    .prepare("SELECT COUNT(*) AS n FROM finds WHERE race_id = ? AND player_id = ?")
-    .get(raceId, playerId).n;
+function playerTallies(raceId, playerId) {
+  const rows = db
+    .prepare("SELECT is_bonus AS isBonus FROM finds WHERE race_id = ? AND player_id = ?")
+    .all(raceId, playerId);
+  let count = 0, bonus = 0;
+  for (const r of rows) {
+    if (r.isBonus) bonus++;
+    else count++;
+  }
+  return { count, bonus, total: rows.length };
+}
 const lastFindAt = (raceId, playerId) =>
   db
     .prepare("SELECT MAX(found_at) AS t FROM finds WHERE race_id = ? AND player_id = ?")
     .get(raceId, playerId).t ?? 0;
 
-function rankOrder(race) {
+function rankOrder(race, tiebreak = "") {
   const players = racePlayers(race.id);
-  const stats = players.map((p) => ({
-    ...p,
-    count: foundCount(race.id, p.id),
-    lastAt: lastFindAt(race.id, p.id),
-  }));
+  const stats = players.map((p) => {
+    const { count, bonus } = playerTallies(race.id, p.id);
+    return {
+      ...p,
+      count,
+      bonus,
+      accuracy: accuracyFor(count, p.invalidGuesses),
+      lastAt: lastFindAt(race.id, p.id),
+    };
+  });
+  // Leaderboard tiebreaks (original: score, then bonus | accuracy | speed).
+  // `tiebreak` optionally forces one secondary first; default chains all:
+  // required desc → bonus desc → accuracy desc → speed (earliest) asc.
+  const cmpUnfinished = (a, b) => {
+    if (b.count !== a.count) return b.count - a.count;
+    if (tiebreak === "accuracy" && b.accuracy !== a.accuracy) return b.accuracy - a.accuracy;
+    if (tiebreak === "speed") return a.lastAt - b.lastAt;
+    // default ("bonus" or ""): bonus, then accuracy, then speed
+    if (b.bonus !== a.bonus) return b.bonus - a.bonus;
+    if (tiebreak !== "bonus" && b.accuracy !== a.accuracy) return b.accuracy - a.accuracy;
+    return a.lastAt - b.lastAt;
+  };
   const finished = stats
     .filter((p) => p.finishedAt)
-    .sort((a, b) => a.finishedAt - b.finishedAt);
+    .sort((a, b) => a.finishedAt - b.finishedAt || b.bonus - a.bonus || b.accuracy - a.accuracy);
   const unfinished = stats
     .filter((p) => !p.finishedAt)
-    .sort((a, b) => b.count - a.count || a.lastAt - b.lastAt);
+    .sort(cmpUnfinished);
   return [...finished, ...unfinished];
 }
 
@@ -179,6 +204,22 @@ function raceView(raceId, playerId) {
   const bonusSet = new Set((puzzle.bonus || []).map((w) => String(w).toUpperCase()));
   const myBonus = foundWords.filter((w) => bonusSet.has(w) && !reqSet.has(w));
   const requiredFound = foundWords.filter((w) => reqSet.has(w)).length;
+  const myBonusCount = myWords.filter((w) => w.isBonus).length;
+  const invalidGuesses = me ? (me.invalidGuesses || 0) : 0;
+  const myAccuracy = accuracyFor(requiredFound, invalidGuesses);
+  // Missing-by-length (counts only, never the words — no spoiler while live).
+  const totalsByLen = new Map();
+  for (const w of reqUpper) {
+    totalsByLen.set(w.length, (totalsByLen.get(w.length) || 0) + 1);
+  }
+  const foundByLen = new Map();
+  for (const w of foundSet) {
+    if (!reqSet.has(w)) continue;
+    foundByLen.set(w.length, (foundByLen.get(w.length) || 0) + 1);
+  }
+  const lengthBreakdown = [...totalsByLen.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([len, total]) => ({ len, total, found: foundByLen.get(len) || 0 }));
   // Progressive hints + fade, computed only when the grid is visible.
   // Counts cover REQUIRED words only (bonus excluded, like the original perks)
   // so no missing-word info leaks beyond per-cell totals.
@@ -230,8 +271,13 @@ function raceView(raceId, playerId) {
     requiredCount: puzzle.required.length,
     bonusCount: puzzle.bonus.length,
     myWords: foundWords,
+    myWordsOrdered: myWords.map((w) => ({ word: w.word, foundAt: w.foundAt, isBonus: !!w.isBonus })),
     myBonus,
+    myBonusCount,
     requiredFound,
+    lengthBreakdown,
+    myAccuracy,
+    invalidGuesses,
     hints,
     faded,
     myFinished: meFinished,
@@ -274,7 +320,19 @@ app.post("/api/races/:id/words", (req, res) => {
     db.prepare("SELECT word FROM finds WHERE race_id = ? AND player_id = ?").all(race.id, playerId).map((r) => r.word)
   );
   const v = validateWord({ grid: puzzle.grid, required: puzzle.required, bonus: puzzle.bonus, word, alreadyFound: already });
-  if (!v.ok) return res.json({ ok: false, reason: v.reason });
+  if (!v.ok) {
+    // Only "not-in-list" hurts accuracy (original rule: too-short /
+    // already-found / bonus never count against you).
+    if (v.reason === "not-in-list") {
+      db.prepare("UPDATE race_players SET invalid_guesses = COALESCE(invalid_guesses, 0) + 1 WHERE race_id = ? AND player_id = ?")
+        .run(race.id, playerId);
+    }
+    const rp2 = db.prepare("SELECT invalid_guesses AS inv FROM race_players WHERE race_id = ? AND player_id = ?").get(race.id, playerId);
+    const reqSet2 = new Set(puzzle.required.map((w) => w.toUpperCase()));
+    const mine2 = db.prepare("SELECT word FROM finds WHERE race_id = ? AND player_id = ?").all(race.id, playerId).map((r) => r.word);
+    const done2 = mine2.filter((w) => reqSet2.has(w)).length;
+    return res.json({ ok: false, reason: v.reason, accuracy: accuracyFor(done2, rp2?.inv || 0) });
+  }
   const t = now();
   db.prepare("INSERT INTO finds (race_id, player_id, word, found_at, is_bonus) VALUES (?, ?, ?, ?, ?)")
     .run(race.id, playerId, v.word, t, v.isBonus ? 1 : 0);
@@ -294,7 +352,9 @@ app.post("/api/races/:id/words", (req, res) => {
     }
   }
   tickAndBroadcast(race.id);
-  res.json({ ok: true, word: v.word, isBonus: v.isBonus, path: v.path, finished, requiredFound: doneCount, requiredTotal: reqSet.size });
+  const invRow = db.prepare("SELECT invalid_guesses AS inv FROM race_players WHERE race_id = ? AND player_id = ?").get(race.id, playerId);
+  const bonusN = db.prepare("SELECT COUNT(*) AS n FROM finds WHERE race_id = ? AND player_id = ? AND is_bonus = 1").get(race.id, playerId).n;
+  res.json({ ok: true, word: v.word, isBonus: v.isBonus, path: v.path, finished, requiredFound: doneCount, requiredTotal: reqSet.size, bonusFound: bonusN, accuracy: accuracyFor(doneCount, invRow?.inv || 0) });
 });
 
 app.post("/api/races/:id/giveup", (req, res) => {
@@ -312,7 +372,7 @@ app.get("/api/races/:id/rank", (req, res) => {
   if (!race) return res.status(404).json({ error: "race not found" });
   tickRace(race);
   race = getRace(req.params.id);
-  const order = rankOrder(race);
+  const order = rankOrder(race, String(req.query.tiebreak || ""));
   const playerId = String(req.query.playerId || "");
   const me = racePlayers(race.id).find((p) => p.id === playerId);
   const reveal = race.status === "done" || !!me?.finishedAt;
@@ -321,7 +381,7 @@ app.get("/api/races/:id/rank", (req, res) => {
     order: order.map((p) => ({
       playerId: p.id, acronym: p.acronym, nickname: p.nickname,
       finished: !!p.finishedAt, gaveUp: p.gaveUp === 1,
-      ...(reveal ? { count: p.count } : {}),
+      ...(reveal ? { count: p.count, bonus: p.bonus, accuracy: p.accuracy } : {}),
     })),
   });
 });
@@ -336,7 +396,7 @@ app.get("/api/races/:id/results", (req, res) => {
   if (race.status !== "done" && !me?.finishedAt)
     return res.status(403).json({ error: "results unlock when you finish or the race ends" });
   const puzzle = getPuzzle(race.puzzle_date);
-  const order = rankOrder(race);
+  const order = rankOrder(race, String(req.query.tiebreak || ""));
   const startMs = race.starts_at;
   // Per-word difficulty: found-by count, avg time, first finder.
   const wordStats = puzzle.required.map((word) => {
@@ -367,7 +427,8 @@ app.get("/api/races/:id/results", (req, res) => {
     status: race.status,
     standings: order.map((p, i) => ({
       rank: i + 1, playerId: p.id, nickname: p.nickname, acronym: p.acronym,
-      count: p.count, requiredTotal: puzzle.required.length,
+      count: p.count, bonus: p.bonus, accuracy: p.accuracy,
+      requiredTotal: puzzle.required.length,
       finishedMs: p.finishedAt ? p.finishedAt - startMs : null, gaveUp: p.gaveUp === 1,
     })),
     hardest: wordStats.slice(0, Math.min(5, wordStats.length)),
@@ -375,6 +436,21 @@ app.get("/api/races/:id/results", (req, res) => {
     leadTimeline: timeline,
     date: race.puzzle_date,
   });
+});
+
+// Room history for the Yesterday tab: past races (no word spoilers,
+// just dates + who raced). Full word lists come from /results (gated).
+app.get("/api/rooms/:code/history", (req, res) => {
+  const code = String(req.params.code).toUpperCase();
+  const limit = Math.min(14, Math.max(1, Number(req.query.limit || 7)));
+  const races = db
+    .prepare("SELECT id, puzzle_date AS date, status, created_at AS createdAt FROM races WHERE room_code = ? ORDER BY puzzle_date DESC LIMIT ?")
+    .all(code, limit);
+  const out = races.map((r) => ({
+    ...r,
+    players: db.prepare("SELECT COUNT(*) AS n FROM race_players WHERE race_id = ?").get(r.id).n,
+  }));
+  res.json({ roomCode: code, races: out });
 });
 
 app.get("/api/rooms/:code/king", (req, res) => {

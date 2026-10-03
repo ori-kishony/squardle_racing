@@ -54,14 +54,36 @@
       <div id="hintNote" class="hint"></div>
     </div>
     <div class="row">
-      <div class="foundPanel"><h3>Words found: <span id="foundCount">0</span>/<span id="reqTotal">?</span></h3><div id="foundGroups"></div></div>
+      <div class="foundPanel">
+        <div class="wordTabs" role="tablist">
+          <button id="tabToday" class="tab on">Today</button>
+          <button id="tabYesterday" class="tab">Yesterday</button>
+          <span class="spacer"></span>
+          <button id="sortAZ" class="tab on" title="Sort A–Z">A–Z</button>
+          <button id="sortFound" class="tab" title="Sort by found order">Found order</button>
+        </div>
+        <h3>Words found: <span id="foundCount">0</span>/<span id="reqTotal">?</span> <span id="accChip" class="accChip" title="Accuracy: required found ÷ (required found + invalid guesses)"></span></h3>
+        <div id="lenSummary" class="lenSummary"></div>
+        <div id="foundGroups"></div>
+        <div id="yesterdayPane" class="hidden"></div>
+        <p class="hint">Tap a word for its definition.</p>
+      </div>
     </div>
     <button id="giveUpBtn" class="danger">Give up</button>
+    <div id="defModal" class="hidden"><div id="defCard"><h4 id="defWord"></h4><p id="defText"></p><button id="defClose">Close</button></div></div>
   </section>
 
   <!-- RESULTS -->
   <section id="resultsView" class="card hidden">
     <h2>Results</h2>
+    <label class="hint">Tiebreak
+      <select id="tiebreakSel">
+        <option value="">Score › bonus › accuracy › speed</option>
+        <option value="bonus">Score › bonus › speed</option>
+        <option value="accuracy">Score › accuracy › speed</option>
+        <option value="speed">Score › speed</option>
+      </select>
+    </label>
     <ol id="standings"></ol>
     <h3>Hardest words</h3>
     <ul id="hardest"></ul>

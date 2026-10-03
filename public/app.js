@@ -23,6 +23,12 @@ const S = {
   timer: null,
   ws: null,
   serverSkew: 0,
+  wordSort: "az",
+  wordTab: "today",
+  myWordsOrdered: [],
+  lengthBreakdown: null,
+  myAccuracy: 1,
+  invalidGuesses: 0,
 };
 $("roomCode").value = S.roomCode;
 if (S.nickname) $("nickname").value = S.nickname;
@@ -104,18 +110,23 @@ function render(v) {
   else stopCountdown();
 
   if (v.race.status === "live" || v.race.status === "done") {
+    if ($("raceView").classList.contains("hidden")) { S.wordTab = S.wordTab || "today"; }
     show("raceView");
     if (v.grid) buildBoard(v.grid);
     $("reqTotal").textContent = v.requiredCount;
     S.requiredTotal = v.requiredCount;
     S.requiredFound = v.requiredFound ?? v.myWords.length;
     S.myWords = new Set(v.myWords);
+    S.myWordsOrdered = v.myWordsOrdered || v.myWords.map((w) => ({ word: w }));
     S.myBonus = new Set(v.myBonus || []);
+    S.lengthBreakdown = v.lengthBreakdown || null;
+    S.myAccuracy = v.myAccuracy ?? 1;
+    S.invalidGuesses = v.invalidGuesses || 0;
     // "stale" = server predates the hints fields (needs `npm start` restart).
     S.hints = v.hints === undefined ? "stale" : v.hints;
     S.faded = v.faded || null;
     paintHints();
-    paintFound(v);
+    paintWordList();
     paintProgress();
     if (v.myFinished || v.race.status === "done") loadResults();
   }
@@ -352,21 +363,120 @@ function paintProgress() {
   }
 }
 
-function paintFound(v) {
+function fmtAcc(a) {
+  return `${Math.round((a ?? 1) * 100)}%`;
+}
+
+function paintWordList() {
   $("foundCount").textContent = S.requiredFound;
+  $("accChip").textContent = `🎯 ${fmtAcc(S.myAccuracy)}`;
+  $("accChip").title = `Accuracy ${fmtAcc(S.myAccuracy)} — only invalid words hurt (${S.invalidGuesses || 0} misses)`;
+  const isToday = (S.wordTab || "today") === "today";
+  $("tabToday").classList.toggle("on", isToday);
+  $("tabYesterday").classList.toggle("on", !isToday);
+  $("sortAZ").classList.toggle("on", (S.wordSort || "az") === "az");
+  $("sortFound").classList.toggle("on", S.wordSort === "found");
+  $("foundGroups").classList.toggle("hidden", !isToday);
+  $("lenSummary").classList.toggle("hidden", !isToday);
+  $("yesterdayPane").classList.toggle("hidden", isToday);
+  if (!isToday) { loadYesterday(); return; }
+  // Missing-by-length: counts only, never the words (no spoiler while live).
+  if (S.lengthBreakdown) {
+    $("lenSummary").innerHTML = S.lengthBreakdown
+      .map((g) => `<span class="lenChip${g.found >= g.total ? " done" : ""}">${g.len}L: ${g.found}/${g.total}</span>`)
+      .join("");
+  } else $("lenSummary").innerHTML = "";
+  paintFound();
+}
+
+function paintFound() {
+  const order = S.myWordsOrdered && S.myWordsOrdered.length ? S.myWordsOrdered : [...S.myWords].map((word) => ({ word }));
   const groups = new Map();
-  for (const w of S.myWords) {
-    // Required count drives progress; bonus chips styled yellow either way.
+  for (const e of order) {
+    const w = e.word;
     const len = w.length;
     if (!groups.has(len)) groups.set(len, []);
-    groups.get(len).push(w);
+    groups.get(len).push(e);
   }
-  const lens = [...groups.keys()].sort((a, b) => a - b);
+  const totals = new Map((S.lengthBreakdown || []).map((g) => [g.len, g.total]));
+  const lens = [...new Set([...groups.keys(), ...totals.keys()])].sort((a, b) => a - b);
+  const byFound = S.wordSort === "found";
   $("foundGroups").innerHTML = lens.length
-    ? lens.map((len) => `<div class="foundGroup"><h4>${len} letters</h4><div class="wordChips">${
-        groups.get(len).sort().map((w) => `<span class="wordChip ${S.myBonus.has(w) ? "bonus" : ""}">${w}</span>`).join("")
-      }</div></div>`).join("")
+    ? lens.map((len) => {
+        let chips = groups.get(len) || [];
+        if (!byFound) chips = [...chips].sort((a, b) => (a.word < b.word ? -1 : 1));
+        const total = totals.get(len);
+        const head = total != null ? `${len} letters — ${chips.length}/${total} (${Math.max(0, total - chips.length)} left)` : `${len} letters`;
+        return `<div class="foundGroup"><h4>${head}</h4><div class="wordChips">${
+          chips.length
+            ? chips.map((e) => `<button class="wordChip ${S.myBonus.has(e.word) ? "bonus" : ""}" data-word="${e.word}">${e.word}</button>`).join("")
+            : `<span class="hint">—</span>`
+        }</div></div>`;
+      }).join("")
     : `<p class="hint">Drag across letters to find words.</p>`;
+}
+
+// Tap a word → definition (free dictionary API, cached, Wiktionary fallback).
+const defCache = new Map();
+async function showDef(word) {
+  const w = String(word || "").toUpperCase();
+  $("defModal").classList.remove("hidden");
+  $("defWord").textContent = w;
+  if (defCache.has(w)) { $("defText").textContent = defCache.get(w); return; }
+  $("defText").textContent = "Looking up…";
+  try {
+    const r = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${w.toLowerCase()}`);
+    if (r.ok) {
+      const j = await r.json();
+      const d = j?.[0]?.meanings?.[0]?.definitions?.[0]?.definition;
+      if (d) { defCache.set(w, d); $("defText").textContent = d; return; }
+    }
+    throw new Error("no dict entry");
+  } catch {
+    try {
+      const r2 = await fetch(`https://en.wiktionary.org/api/rest_v1/page/definition/${w.toLowerCase()}`);
+      if (r2.ok) {
+        const j2 = await r2.json();
+        const d2 = j2?.en?.[0]?.definitions?.[0]?.definition;
+        const text = d2 ? String(d2).replace(/<[^>]+>/g, "") : "No definition found.";
+        defCache.set(w, text); $("defText").textContent = text; return;
+      }
+    } catch { /* fall through */ }
+    $("defText").textContent = "No definition found.";
+  }
+}
+document.addEventListener("click", (e) => {
+  const chip = e.target.closest?.(".wordChip[data-word]");
+  if (chip) showDef(chip.dataset.word);
+  if (e.target.closest?.("#defClose") || e.target.id === "defModal") $("defModal").classList.add("hidden");
+});
+
+$("tabToday").onclick = () => { S.wordTab = "today"; paintWordList(); };
+$("tabYesterday").onclick = () => { S.wordTab = "yesterday"; paintWordList(); };
+$("sortAZ").onclick = () => { S.wordSort = "az"; paintWordList(); };
+$("sortFound").onclick = () => { S.wordSort = "found"; paintWordList(); };
+$("tiebreakSel").onchange = () => loadResults(true);
+
+async function loadYesterday() {
+  const pane = $("yesterdayPane");
+  pane.innerHTML = `<p class="hint">Loading yesterday…</p>`;
+  try {
+    const h = await api(`/api/rooms/${encodeURIComponent(S.roomCode)}/history?limit=7`);
+    const past = (h.races || []).filter((r) => r.date !== S.date).sort((a, b) => (a.date < b.date ? 1 : -1))[0];
+    if (!past) { pane.innerHTML = `<p class="hint">No yesterday race in this room yet.</p>`; return; }
+    const r = await api(`/api/races/${past.id}/results?playerId=${encodeURIComponent(S.playerId)}`);
+    const groups = new Map();
+    for (const s of r.wordStats || []) {
+      const len = s.word.length;
+      if (!groups.has(len)) groups.set(len, []);
+      groups.get(len).push(s);
+    }
+    pane.innerHTML = `<p class="hint">Yesterday ${r.date} — ${r.status}${r.standings?.length ? ` · 👑 ${escapeHtml(r.standings[0].nickname)}` : ""}</p>` +
+      [...groups.keys()].sort((a, b) => a - b).map((len) =>
+        `<div class="foundGroup"><h4>${len} letters (${groups.get(len).length})</h4><div class="wordChips">${
+          groups.get(len).map((s) => `<button class="wordChip" data-word="${s.word}" title="found by ${s.foundBy}/${s.totalPlayers}">${s.word}</button>`).join("")
+        }</div></div>`).join("");
+  } catch (e) { pane.innerHTML = `<p class="hint">Yesterday locked until that race ends.</p>`; }
 }
 
 $("giveUpBtn").onclick = async () => {
@@ -382,17 +492,18 @@ function paintRank(order) {
     .join('<span>›</span>');
 }
 
-async function loadResults() {
+async function loadResults(force) {
   try {
-    const r = await api(`/api/races/${S.raceId}/results?playerId=${encodeURIComponent(S.playerId)}`);
+    const tb = $("tiebreakSel") ? $("tiebreakSel").value : "";
+    const r = await api(`/api/races/${S.raceId}/results?playerId=${encodeURIComponent(S.playerId)}${tb ? `&tiebreak=${encodeURIComponent(tb)}` : ""}`);
     show("resultsView");
     if (S.grid) { /* keep race view accessible via back */ }
     show("resultsView");
     $("standings").innerHTML = r.standings
-      .map((s) => `<li><b>${s.acronym}</b> ${escapeHtml(s.nickname)} — ${s.count}/${s.requiredTotal}${s.finishedMs != null ? ` in ${fmtMs(s.finishedMs)}` : s.gaveUp ? " (gave up)" : " (racing…)"}</li>`)
+      .map((s) => `<li><button class="linklike" data-acronym="${escapeHtml(s.acronym)}"><b>${s.rank}. ${s.acronym}</b></button> ${escapeHtml(s.nickname)} — ${s.count}/${s.requiredTotal} +${s.bonus || 0} bonus · 🎯 ${fmtAcc(s.accuracy)}${s.finishedMs != null ? ` in ${fmtMs(s.finishedMs)}` : s.gaveUp ? " (gave up)" : " (racing…)"}</li>`)
       .join("");
     $("hardest").innerHTML = r.hardest
-      .map((h) => `<li><b>${h.word}</b> — found by ${h.foundBy}/${h.totalPlayers}${h.firstBy ? `, first: ${h.firstBy}` : ""}</li>`)
+      .map((h) => `<li><button class="wordChip" data-word="${h.word}">${h.word}</button> — found by ${h.foundBy}/${h.totalPlayers}${h.firstBy ? `, first: ${h.firstBy}` : ""}</li>`)
       .join("");
     const me = r.standings.find((s) => s.playerId === S.playerId);
     const won = me && me.rank === 1 && me.finishedMs != null;

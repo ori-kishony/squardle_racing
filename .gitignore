@@ -8,3 +8,7 @@ __pycache__/
 node_modules/
 data/*.sqlite3*
 data/official-today.json
+
+# Local secrets (API tokens etc.) — never commit
+env.txt
+.env
