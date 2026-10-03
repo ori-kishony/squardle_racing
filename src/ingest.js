@@ -130,6 +130,25 @@ export function savePuzzle({ date, grid, required, bonus = [], source }) {
   );
   if (problems.length)
     console.warn(`puzzle ${date}: ${problems.length} required words have no grid path: ${problems.join(",")}`);
+  insertPuzzle({ date, grid, required, bonus, source, overwrite: true });
+}
+
+function insertPuzzle({ date, grid, required, bonus = [], source, overwrite }) {
+  if (!overwrite) {
+    const existing = getPuzzle(date);
+    if (existing) {
+      // Never clobber a real/manual puzzle underneath a room that may be racing it.
+      if (existing.source !== "seed-sample") return "kept";
+      // A seed row may only be upgraded while its races haven't started
+      // (lobby = grid never revealed, no finds possible yet).
+      const started = db
+        .prepare(
+          `SELECT 1 FROM races WHERE puzzle_date = ? AND status != 'lobby' LIMIT 1`
+        )
+        .get(date);
+      if (started) return "kept";
+    }
+  }
   db.prepare(
     `INSERT INTO puzzles (date, grid, required, bonus, source)
      VALUES (?, ?, ?, ?, ?)
@@ -173,9 +192,13 @@ export function ensurePuzzleFor(date) {
 /** Fetch official puzzles and store them. Returns {ok, officialToday?, error?}. */
 export async function refreshOfficialPuzzles() {
   const { puzzles, officialToday } = await fetchOfficialExpress();
-  for (const p of puzzles) savePuzzle({ ...p, source: "auto-fetch" });
+  let updated = 0;
+  for (const p of puzzles) {
+    insertPuzzle({ ...p, source: "auto-fetch", overwrite: false });
+    updated++;
+  }
   if (officialToday) setOfficialToday(officialToday);
-  return { ok: true, count: puzzles.length, officialToday };
+  return { ok: true, count: updated, officialToday };
 }
 
 // CLI: `npm run fetch`

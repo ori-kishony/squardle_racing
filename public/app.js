@@ -325,4 +325,25 @@ $("adminSave").onclick = async () => {
 // auto-resume + ?room= invite links
 const q = new URLSearchParams(location.search);
 if (q.get("room")) { S.roomCode = q.get("room").toUpperCase(); $("roomCode").value = S.roomCode; }
-if (S.playerId && S.raceId) { connect(); sync(); refreshKing(); }
+(async function resume() {
+  if (!S.playerId || !S.raceId) return;
+  try {
+    // A stored race from a previous day stays pinned to its old puzzle.
+    // Re-route to today's race when the dates no longer match.
+    const [t, v] = await Promise.all([
+      api("/api/today"),
+      api(`/api/races/${S.raceId}?playerId=${encodeURIComponent(S.playerId)}`),
+    ]);
+    if (v.race.date !== t.date) {
+      const j = await api("/api/rooms/join", {
+        method: "POST",
+        body: JSON.stringify({ roomCode: S.roomCode, nickname: S.nickname }),
+      });
+      S.playerId = j.playerId; S.raceId = j.raceId; S.date = j.date;
+      store.set("playerId", S.playerId); store.set("raceId", S.raceId);
+    }
+  } catch { /* stored session invalid: user joins fresh via the form */ }
+  connect();
+  await sync().catch(() => {});
+  await refreshKing();
+})();

@@ -1,4 +1,5 @@
 import express from "express";
+import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
@@ -366,19 +367,27 @@ function broadcast(raceId) {
   }
 }
 
-const server = app.listen(process.env.PORT || 3000, () => {
-  ensurePuzzleFor(currentPuzzleDate());
-  console.log(`squardle racing on http://localhost:${process.env.PORT || 3000}`);
+async function boot() {
+  // Resolve today's REAL puzzle before anyone can join, so the first race
+  // of the day is never pinned to a stale fallback date.
   if (!process.env.NO_FETCH) {
-    // Pull today's real Express puzzle in the background + re-check periodically.
-    refreshOfficialPuzzles()
-      .then((r) => console.log(`official puzzles: ${r.count}, today=${r.officialToday}`))
-      .catch((err) => console.warn("official fetch failed, using stored puzzle:", err.message));
+    try {
+      const r = await refreshOfficialPuzzles();
+      console.log(`official puzzles: ${r.count}, today=${r.officialToday}`);
+    } catch (err) {
+      console.warn("official fetch failed, using stored puzzle:", err.message);
+    }
     setInterval(() => {
       refreshOfficialPuzzles().catch(() => {});
     }, 6 * 3600 * 1000);
   }
-});
+  ensurePuzzleFor(currentPuzzleDate());
+  server.listen(process.env.PORT || 3000, () => {
+    console.log(`squardle racing on http://localhost:${process.env.PORT || 3000}`);
+  });
+}
+
+const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 wss.on("connection", (ws, req) => {
   const u = new URL(req.url, "http://x");
@@ -401,3 +410,5 @@ setInterval(() => {
     if (after.status + "|" + after.starts_at !== before) broadcast(r.id);
   }
 }, 500);
+
+boot();
