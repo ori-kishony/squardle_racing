@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Squaredle Express Racing</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <h1>⚡ Squaredle Express Racing</h1>
+  <div id="kingBanner" class="king hidden"></div>
+</header>
+
+<main>
+  <!-- JOIN -->
+  <section id="joinView" class="card">
+    <h2>Join today's race</h2>
+    <label>Room code <input id="roomCode" value="KINGS" maxlength="12" autocomplete="off"></label>
+    <label>Nickname <input id="nickname" maxlength="24" placeholder="e.g. Anna" autocomplete="off"></label>
+    <button id="joinBtn" class="primary">Join race</button>
+    <p class="hint">Same room code = same group. One race per day. Everyone must press Ready — then we count down and reveal together.</p>
+    <p class="hint">Puzzle source: official Squaredle Express (auto-fetched daily, manual fallback in Admin).</p>
+  </section>
+
+  <!-- LOBBY -->
+  <section id="lobbyView" class="card hidden">
+    <h2>Lobby <span id="lobbyDate" class="muted"></span></h2>
+    <ul id="playerList"></ul>
+    <button id="readyBtn" class="primary">I'm Ready</button>
+    <p class="hint">Waiting for <b>all</b> players to be ready. Joining late sends everyone back to lobby.</p>
+  </section>
+
+  <!-- COUNTDOWN -->
+  <div id="countdownOverlay" class="hidden"><div id="countdownNum">5</div><p>everyone ready — puzzle drops together…</p></div>
+
+  <!-- RACE -->
+  <section id="raceView" class="hidden">
+    <div id="liveRank" class="liverank" title="Live running order (no spoilers)"></div>
+    <div id="boardWrap">
+      <div id="board" class="blurred"></div>
+      <div id="wordPreview"><span id="wordText"></span><button id="clearBtn" title="clear">✕</button></div>
+      <input id="kbd" placeholder="or type a word + Enter" autocomplete="off" autocapitalize="characters">
+      <div id="msg" class="msg"></div>
+    </div>
+    <div class="row">
+      <div><h3>Found <span id="foundCount">0</span>/<span id="reqTotal">?</span></h3><ul id="foundList"></ul></div>
+    </div>
+    <button id="giveUpBtn" class="danger">Give up</button>
+  </section>
+
+  <!-- RESULTS -->
+  <section id="resultsView" class="card hidden">
+    <h2>Results</h2>
+    <ol id="standings"></ol>
+    <h3>Hardest words</h3>
+    <ul id="hardest"></ul>
+    <h3>Share</h3>
+    <div id="shareCard" class="share"></div>
+    <button id="copyBtn">Copy share text</button>
+  </section>
+
+  <!-- ADMIN -->
+  <section id="adminView" class="card hidden">
+    <h2>Admin: today's puzzle</h2>
+    <p class="hint" id="puzzleSource"></p>
+    <label>Grid (9 letters, row-major) <input id="adminGrid" maxlength="9" placeholder="TET..."></label>
+    <label>Required words (comma separated) <textarea id="adminRequired" rows="3"></textarea></label>
+    <label>Bonus words (comma separated) <textarea id="adminBonus" rows="2"></textarea></label>
+    <div class="row">
+      <button id="adminFetch">Try auto-fetch</button>
+      <button id="adminSave" class="primary">Save puzzle</button>
+    </div>
+    <div id="adminMsg" class="msg"></div>
+  </section>
+
+  <p class="foot"><a href="#" id="adminLink">Admin: puzzle setup</a> · <span id="connDot" class="dot"></span> <span id="connText">connecting…</span></p>
+</main>
+<script src="app.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+# SQLite data + virtualenv (if ever used) are local-only
+data.sqlite3*
+data.sqlite3-journal
+__pycache__/
+*.pyc
+.venv/
+
+node_modules/
+data/*.sqlite3*
