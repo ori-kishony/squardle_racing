@@ -1,0 +1,22 @@
+# Render: easiest free-ish host with a real https URL.
+# NOTE: persistent disks cost ~$0.25/GB/mo (no free persistent disk).
+# Without the disk below, deploys/restarts wipe race history.
+# Free alternative with free volume: Fly.io (see fly.toml).
+services:
+  - type: web
+    name: squardle-racing
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    autoDeploy: true
+    disk:
+      name: squardle-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DB_PATH
+        value: /data/squardle_racing.sqlite3
+      - key: OFFICIAL_TODAY_PATH
+        value: /data/official-today.json

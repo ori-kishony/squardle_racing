@@ -1,0 +1,35 @@
+# Fly.io: free-tier-friendly + 1GB free volume for SQLite persistence.
+# Usage:
+#   fly launch --no-deploy   # accept defaults, then:
+#   fly volumes create squardle_data --region ams --size 1
+#   fly deploy
+# Or rename `app = "..."` below to your app name first.
+app = "squardle-racing"
+primary_region = "ams"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[[mounts]]
+  source = "squardle_data"
+  destination = "/data"
+
+[env]
+  NODE_ENV = "production"
+  DB_PATH = "/data/squardle_racing.sqlite3"
+  OFFICIAL_TODAY_PATH = "/data/official-today.json"

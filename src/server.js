@@ -18,7 +18,18 @@ const COUNTDOWN_MS = 5000;
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const app = express();
+app.set("trust proxy", 1);
 app.use(express.json({ limit: "64kb" }));
+
+// Health check for Render/Fly/Railway (no DB write, just readability).
+app.get("/healthz", (req, res) => {
+  try {
+    db.prepare("SELECT 1 AS ok").get();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 // ---------- helpers ----------
 const now = () => Date.now();
@@ -434,8 +445,9 @@ async function boot() {
     }, 6 * 3600 * 1000);
   }
   ensurePuzzleFor(currentPuzzleDate());
-  server.listen(process.env.PORT || 3000, () => {
-    console.log(`squardle racing on http://localhost:${process.env.PORT || 3000}`);
+  const port = Number(process.env.PORT || 3000);
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`squardle racing on http://localhost:${port}`);
   });
 }
 
