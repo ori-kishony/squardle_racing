@@ -160,41 +160,49 @@ function paintPath() {
 }
 
 let dragging = false;
-document.addEventListener("pointerdown", (e) => {
-  const c = e.target.closest?.(".cell");
-  if (!c || !S.grid) return;
-  dragging = true;
-  S.path = [Number(c.dataset.i)];
-  paintPath();
-});
-document.addEventListener("pointerover", (e) => {
-  if (!dragging) return;
-  const c = e.target.closest?.(".cell");
-  if (!c) return;
-  const i = Number(c.dataset.i);
+let dragPointerId = null;
+function cellFromPoint(x, y) {
+  const el = document.elementFromPoint(x, y);
+  return el && el.closest ? el.closest(".cell") : null;
+}
+function pushCell(cell) {
+  if (!cell) return;
+  const i = Number(cell.dataset.i);
   if (S.path.includes(i)) {
-    // backtrack
+    // backtrack to tapped cell
     S.path = S.path.slice(0, S.path.indexOf(i) + 1);
   } else if (S.path.length && adjacent(S.path[S.path.length - 1], i)) {
     S.path.push(i);
   }
   paintPath();
+}
+document.addEventListener("pointerdown", (e) => {
+  const c = e.target.closest?.(".cell");
+  if (!c || !S.grid || $("board").classList.contains("blurred")) return;
+  e.preventDefault();
+  dragging = true;
+  dragPointerId = e.pointerId;
+  S.path = [Number(c.dataset.i)];
+  paintPath();
 });
-document.addEventListener("pointerup", () => {
-  if (!dragging) return;
+document.addEventListener("pointermove", (e) => {
+  if (!dragging || (dragPointerId !== null && e.pointerId !== dragPointerId)) return;
+  // elementFromPoint so finger-slides work on touch (no pointerover while touching).
+  pushCell(cellFromPoint(e.clientX, e.clientY));
+});
+function endDrag(e) {
+  if (!dragging || (e && dragPointerId !== null && e.pointerId !== dragPointerId)) return;
   dragging = false;
+  dragPointerId = null;
+  if (!S.grid) return;
   const w = S.path.map((i) => S.grid[i]).join("");
   S.path = [];
   paintPath();
   if (w.length >= 3) submitWord(w);
-});
-$("clearBtn").onclick = () => { S.path = []; paintPath(); $("kbd").value = ""; };
-$("kbd").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && e.target.value.trim().length >= 3) {
-    submitWord(e.target.value.trim());
-    e.target.value = "";
-  }
-});
+}
+document.addEventListener("pointerup", endDrag);
+document.addEventListener("pointercancel", () => { dragging = false; dragPointerId = null; S.path = []; paintPath(); });
+$("clearBtn").onclick = () => { S.path = []; paintPath(); };
 
 async function submitWord(w) {
   try {
@@ -279,17 +287,14 @@ function connect() {
       if (m.status === "countdown") startCountdown(m.startsAt);
       else stopCountdown();
       paintRank(m.order);
-      if (m.status !== "lobby" && m.status !== "countdown") sync();
+      sync().catch(() => {}); // refresh lobby/ready list, grid reveal, finish
     } catch {}
   };
   clearInterval(S.timer);
-  S.timer = setInterval(async () => {
-    if (!S.ws || S.ws.readyState !== 1) await sync().catch(() => {});
-    try {
-      const r = await api(`/api/races/${S.raceId}/rank?playerId=${encodeURIComponent(S.playerId)}`);
-      paintRank(r.order);
-    } catch {}
-  }, 3000);
+  S.timer = setInterval(() => {
+    // Full refresh fallback (covers dropped sockets and lobby changes).
+    sync().catch(() => {});
+  }, 4000);
 }
 
 // ---------- admin ----------

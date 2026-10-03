@@ -4,7 +4,7 @@ Race the daily **Squaredle Express** (3×3) with friends — in the browser, on 
 
 - One race per day, same official puzzle for everyone
 - Lobby → everyone presses **Ready** → synced **countdown** → grid reveals for all at once
-- Play the grid in-app (drag/swipe or type); first to **100% of required words** is crowned **👑 King**
+- Play the grid in-app with drag/swipe gestures (like the original); first to **100% of required words** is crowned **👑 King**
 - **Live ranking shows acronym order only** (no word counts, no spoilers)
 - No timeouts: the race stays open until everyone finishes or gives up
 - Stats: lead changes, hardest words (fewest finders / slowest), first-finder per word
@@ -24,11 +24,11 @@ Invite link format: `http://your-host/?room=KINGS`.
 
 ## Daily puzzle
 
-The official Squaredle site has **no public API**, so:
-
-1. The server tries `npm run fetch` (scrapes `squaredle.app/xp` HTML+JS for grid + word lists) — fragile by nature.
-2. If that fails, use **Admin: puzzle setup** in the footer to paste the 9-letter grid + word lists manually (takes 1 min each morning).
-3. Until either runs, a sample puzzle ships so you can test the full flow today.
+The official Squaredle site has **no public API**, but it publishes its puzzle
+bundle (`/api/today-puzzle-config.js`). The server fetches it on startup and
+every 6h, decoding the real board + word lists and following the site's own
+calendar for "today". If the site format changes, use **Admin: puzzle setup**
+in the footer to paste the 9-letter grid + word lists manually.
 
 The grid is hidden from the API until the countdown hits zero, so early joiners can't peek.
 

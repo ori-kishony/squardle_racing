@@ -1,84 +1,135 @@
-// Daily puzzle ingest: best-effort auto-fetch of the official Squaredle
-// Express puzzle + manual fallback. The official site has no public API,
-// so this parser is intentionally fragile; server keeps last-known puzzle
-// and the admin UI allows manual paste when the scrape breaks.
+// Daily puzzle ingest: fetches the official Squaredle Express puzzle.
+//
+// The official site has no public API, but it publishes its puzzle data in
+// `/api/today-puzzle-config.js` (referenced from `/?level=xp`). Word lists
+// are obfuscated with a char-substitution + base64; the substitution alphabet
+// and rotation are extracted live from the bundled closure-*.js so this
+// keeps working across redeploys. `gTodayDateStr` from the config is the
+// authority for "which puzzle is today's".
 import { db } from "./db.js";
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { findPath } from "./words.js";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const UA = { "User-Agent": "squardle-racing (friends-group, few req/day)" };
 
 export function todayDateUTC() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function extractGridAndWords(html) {
-  // Look for embedded JSON blobs: 9-letter grids and word arrays.
-  // Heuristic 1: `"grid":"abcdefghi"` or `"letters":[...]`
-  const grids = [];
-  for (const m of html.matchAll(/"grid"\s*:\s*"([a-zA-Z]{9})"/g))
-    grids.push(m[1].toUpperCase());
-  for (const m of html.matchAll(/"letters"\s*:\s*\[([^\]]{10,80})\]/g)) {
-    const letters = [...m[1].matchAll(/"([a-zA-Z])"/g)].map((x) => x[1]);
-    if (letters.length === 9) grids.push(letters.join("").toUpperCase());
-  }
-  // Heuristic 2: word lists `"words":[...]` / `"answers":[...]`
-  const lists = [];
-  for (const key of ["words", "answers", "required", "solutions"]) {
-    for (const m of html.matchAll(
-      new RegExp(`"${key}"\\s*:\\s*\\[([^\\]]{5,2000})\\]`, "g")
-    )) {
-      const words = [...m[1].matchAll(/"([a-zA-Z]{3,9})"/g)].map((x) =>
-        x[1].toUpperCase()
-      );
-      if (words.length >= 5) lists.push(words);
+function officialTodayPath() {
+  return process.env.OFFICIAL_TODAY_PATH || join(root, "data", "official-today.json");
+}
+
+export function getOfficialToday() {
+  try {
+    if (existsSync(officialTodayPath()))
+      return JSON.parse(readFileSync(officialTodayPath(), "utf8")).date;
+  } catch { /* ignore */ }
+  return null;
+}
+
+function setOfficialToday(date) {
+  mkdirSync(dirname(officialTodayPath()), { recursive: true });
+  writeFileSync(officialTodayPath(), JSON.stringify({ date }));
+}
+
+/** Which puzzle date should new races use? Official calendar wins when known. */
+export function currentPuzzleDate() {
+  const official = getOfficialToday();
+  if (official && getPuzzle(official)) return official;
+  return todayDateUTC();
+}
+
+async function get(url) {
+  const res = await fetch(url, { headers: UA });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  return res.text();
+}
+
+async function extractDecoderClosures(html) {
+  const m = html.match(/<script[^>]+src="([^"]*closure-[^"]*\.js)"/);
+  if (!m) throw new Error("closure bundle not found in HTML");
+  const js = await get(new URL(m[1], "https://squaredle.app/").toString());
+  // Substitution: g=function(r){var p=e.indexOf(r);return-1==p?r:e[(p-N+e.length)%e.length]}
+  const fn = js.match(
+    /(\w+)=function\(\w+\)\{var \w+=(\w+)\.indexOf\(\w+\);return-1==\w+\?\w+:\2\[\(p-(\d+)\+\2\.length\)%\2\.length\]\}/
+  );
+  // Fallback to the looser shape if closure renames locals.
+  const loose =
+    fn ||
+    js.match(/indexOf\(\w+\);return-1==\w+\?\w+:\w+\[\(p-(\d+)\+\w+\.length\)%\w+\.length\]\}/);
+  if (!loose) throw new Error("decoder function not found in bundle");
+  const rot = parseInt(loose[3] ?? loose[1], 10);
+  const alphas = [...js.matchAll(/"([A-Za-z0-9]{60,70})"/g)].map((x) => x[1]);
+  // The alphabet is the 62-char base64-ish custom set; pick the one that decodes.
+  return { js, rot, alphas };
+}
+
+function tryDecode(field, alpha, rot) {
+  const mapped = [...field]
+    .map((ch) => {
+      const p = alpha.indexOf(ch);
+      return p === -1 ? ch : alpha[(p - rot + alpha.length) % alpha.length];
+    })
+    .join("");
+  return Buffer.from(mapped, "base64").toString("utf8");
+}
+
+function parsePuzzleConfig(scriptText, alphas, rot) {
+  const i = scriptText.indexOf("const gPuzzleConfig = ");
+  if (i === -1) throw new Error("gPuzzleConfig not found");
+  const j = scriptText.indexOf(";\n", i);
+  const cfg = JSON.parse(scriptText.slice(i + "const gPuzzleConfig = ".length, j));
+  const todayMatch = scriptText.match(/gTodayDateStr\s*=\s*'(\d{4})\/(\d{2})\/(\d{2})'/);
+  const officialToday = todayMatch
+    ? `${todayMatch[1]}-${todayMatch[2]}-${todayMatch[3]}`
+    : null;
+  const out = [];
+  for (const [key, e] of Object.entries(cfg.puzzles || {})) {
+    if (!key.endsWith("-xp") || !Array.isArray(e.board)) continue;
+    const date = key.slice(0, 10).replaceAll("/", "-");
+    const grid = e.board.join("").toUpperCase().split("");
+    if (grid.length !== 9) continue;
+    let required = null, bonus = [];
+    for (const alpha of alphas) {
+      try {
+        const req = tryDecode(e.wordScores || "", alpha, rot).split(",").filter(Boolean);
+        const bon = tryDecode(e.optionalWordScores || "", alpha, rot).split(",").filter(Boolean);
+        // Sanity: words must be lowercase alpha, 3-9 chars.
+        if (req.length >= 5 && req.every((w) => /^[a-z]{3,9}$/.test(w))) {
+          required = req.map((w) => w.toUpperCase());
+          bonus = bon.filter((w) => /^[a-z]{3,9}$/.test(w)).map((w) => w.toUpperCase());
+          break;
+        }
+      } catch { /* try next alphabet */ }
     }
+    if (!required) throw new Error(`could not decode words for ${key}`);
+    out.push({ date, grid, required, bonus });
   }
-  return { grids, lists };
+  return { puzzles: out, officialToday };
 }
 
 export async function fetchOfficialExpress() {
-  const urls = ["https://squaredle.app/xp", "https://squaredle.app/"];
-  let lastErr = null;
-  for (const url of urls) {
-    try {
-      const res = await fetch(url, {
-        headers: { "User-Agent": "squardle-racing (friends-group, 1 req/day)" },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const html = await res.text();
-      // Follow bundled JS: fetch script tags and scan them too.
-      const scripts = [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map(
-        (m) => new URL(m[1], url).toString()
-      );
-      let combined = html;
-      for (const src of scripts.slice(0, 12)) {
-        try {
-          const r = await fetch(src, {
-            headers: { "User-Agent": "squardle-racing" },
-          });
-          if (r.ok) combined += "\n" + (await r.text());
-        } catch {
-          /* ignore individual script failures */
-        }
-      }
-      const { grids, lists } = extractGridAndWords(combined);
-      if (grids.length && lists.length) {
-        // Pick the most frequent 9-letter grid and the longest word list.
-        const grid =
-          grids.sort(
-            (a, b) =>
-              grids.filter((g) => g === b).length -
-              grids.filter((g) => g === a).length
-          )[0];
-        const required = lists.sort((a, b) => b.length - a.length)[0];
-        return { ok: true, grid: grid.split(""), required, bonus: [] };
-      }
-      lastErr = "parsed 0 grids/lists from official HTML+JS";
-    } catch (err) {
-      lastErr = String(err?.message || err);
-    }
-  }
-  return { ok: false, reason: lastErr || "unknown fetch error" };
+  const html = await get("https://squaredle.app/?level=xp");
+  const cfgMatch = html.match(/<script[^>]+src="([^"]*today-puzzle-config\.js)"/);
+  if (!cfgMatch) throw new Error("today-puzzle-config.js not found in HTML");
+  const cfgUrl = new URL(cfgMatch[1], "https://squaredle.app/").toString();
+  const [cfgText, { alphas, rot }] = await Promise.all([
+    get(cfgUrl),
+    extractDecoderClosures(html),
+  ]);
+  return parsePuzzleConfig(cfgText, alphas, rot);
 }
 
 export function savePuzzle({ date, grid, required, bonus = [], source }) {
+  const problems = required.filter(
+    (w) => !findPath(grid.map((c) => String(c).toUpperCase()), w)
+  );
+  if (problems.length)
+    console.warn(`puzzle ${date}: ${problems.length} required words have no grid path: ${problems.join(",")}`);
   db.prepare(
     `INSERT INTO puzzles (date, grid, required, bonus, source)
      VALUES (?, ?, ?, ?, ?)
@@ -107,7 +158,7 @@ export function getPuzzle(date) {
 
 export function ensurePuzzleFor(date) {
   if (getPuzzle(date)) return getPuzzle(date);
-  // Seed sample so the app is playable before the first successful scrape.
+  // Offline fallback so the app is playable before the first successful scrape.
   const seed = {
     date,
     grid: ["T", "E", "T", "A", "H", "R", "L", "U", "G"],
@@ -119,16 +170,25 @@ export function ensurePuzzleFor(date) {
   return getPuzzle(date);
 }
 
-// CLI: `npm run fetch [-- YYYY-MM-DD]`
+/** Fetch official puzzles and store them. Returns {ok, officialToday?, error?}. */
+export async function refreshOfficialPuzzles() {
+  const { puzzles, officialToday } = await fetchOfficialExpress();
+  for (const p of puzzles) savePuzzle({ ...p, source: "auto-fetch" });
+  if (officialToday) setOfficialToday(officialToday);
+  return { ok: true, count: puzzles.length, officialToday };
+}
+
+// CLI: `npm run fetch`
 if (process.argv[1]?.endsWith("ingest.js")) {
-  const date = process.argv[2] || todayDateUTC();
-  const r = await fetchOfficialExpress();
-  if (r.ok) {
-    savePuzzle({ date, ...r, source: "auto-fetch" });
-    console.log(`saved ${date}: grid=${r.grid.join("")} words=${r.required.length}`);
-  } else {
-    console.log(`auto-fetch failed (${r.reason}); keeping existing/manual puzzle`);
-    ensurePuzzleFor(date);
-    console.log(`ensured puzzle for ${date} (source=${getPuzzle(date).source})`);
+  try {
+    const r = await refreshOfficialPuzzles();
+    console.log(`saved ${r.count} express puzzles; official today=${r.officialToday}`);
+    for (const d of [r.officialToday, todayDateUTC()]) {
+      const p = d && getPuzzle(d);
+      if (p) console.log(`${d}: grid=${p.grid.join("")} required=${p.required.length} bonus=${p.bonus.length}`);
+    }
+  } catch (err) {
+    console.log(`auto-fetch failed (${err.message}); keeping existing puzzles`);
+    ensurePuzzleFor(currentPuzzleDate());
   }
 }

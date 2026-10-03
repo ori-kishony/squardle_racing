@@ -2,7 +2,7 @@
 # End-to-end smoke test: join 2 players, ready, countdown->live, play to 100%, king+results.
 set -u
 B=http://localhost:3759
-export PORT=3759 DB_PATH=/tmp/e2e.sqlite3
+export PORT=3759 DB_PATH=/tmp/e2e.sqlite3 NO_FETCH=1
 rm -f /tmp/e2e.sqlite3*
 setsid node src/server.js </dev/null >/tmp/e2e-server.log 2>&1 &
 SRV=$!

@@ -6,10 +6,10 @@ import { fileURLToPath } from "node:url";
 import { db, acronymFor } from "./db.js";
 import { validateWord } from "./words.js";
 import {
-  todayDateUTC,
   getPuzzle,
   ensurePuzzleFor,
-  fetchOfficialExpress,
+  currentPuzzleDate,
+  refreshOfficialPuzzles,
   savePuzzle,
 } from "./ingest.js";
 
@@ -87,9 +87,12 @@ function tickRace(race) {
 }
 
 function tickAndBroadcast(raceId) {
+  // Always broadcast: joins/ready-toggles often change nothing about status,
+  // but every client (esp. the first joiner) must still refresh.
   const race = getRace(raceId);
   if (!race) return;
-  if (tickRace(race)) broadcast(raceId);
+  tickRace(race);
+  broadcast(raceId);
 }
 
 // ---------- probabilities: one race per room per day ----------
@@ -116,7 +119,7 @@ function getOrCreateRace(roomCode, date) {
 
 // ---------- API ----------
 app.get("/api/today", (req, res) => {
-  const date = todayDateUTC();
+  const date = currentPuzzleDate();
   const p = ensurePuzzleFor(date);
   res.json({ date, requiredCount: p.required.length, bonusCount: p.bonus.length, source: p.source });
 });
@@ -134,7 +137,7 @@ app.post("/api/rooms/join", (req, res) => {
     db.prepare("INSERT INTO players (id, room_code, nickname, acronym, token, created_at) VALUES (?, ?, ?, ?, ?, ?)")
       .run(player.id, player.room_code, player.nickname, player.acronym, player.token, player.created_at);
   }
-  const date = todayDateUTC();
+  const date = currentPuzzleDate();
   const race = getOrCreateRace(roomCode, date);
   db.prepare("INSERT INTO race_players (race_id, player_id, ready) VALUES (?, ?, 0) ON CONFLICT DO NOTHING")
     .run(race.id, player.id);
@@ -335,12 +338,12 @@ app.post("/api/admin/puzzles", (req, res) => {
   res.json({ ok: true, puzzle: getPuzzle(date) });
 });
 app.post("/api/admin/fetch", async (req, res) => {
-  const date = req.body?.date || todayDateUTC();
-  const r = await fetchOfficialExpress();
-  if (!r.ok) return res.status(502).json({ ok: false, reason: r.reason });
-  savePuzzle({ date, ...r, source: "auto-fetch" });
-  // Point today's not-yet-started race at it (only lobby races).
-  res.json({ ok: true, puzzle: getPuzzle(date) });
+  try {
+    const r = await refreshOfficialPuzzles();
+    res.json({ ok: true, officialToday: r.officialToday, count: r.count, puzzle: getPuzzle(r.officialToday) });
+  } catch (err) {
+    res.status(502).json({ ok: false, reason: err.message });
+  }
 });
 
 app.use(express.static(join(root, "public")));
@@ -364,8 +367,17 @@ function broadcast(raceId) {
 }
 
 const server = app.listen(process.env.PORT || 3000, () => {
-  ensurePuzzleFor(todayDateUTC());
+  ensurePuzzleFor(currentPuzzleDate());
   console.log(`squardle racing on http://localhost:${process.env.PORT || 3000}`);
+  if (!process.env.NO_FETCH) {
+    // Pull today's real Express puzzle in the background + re-check periodically.
+    refreshOfficialPuzzles()
+      .then((r) => console.log(`official puzzles: ${r.count}, today=${r.officialToday}`))
+      .catch((err) => console.warn("official fetch failed, using stored puzzle:", err.message));
+    setInterval(() => {
+      refreshOfficialPuzzles().catch(() => {});
+    }, 6 * 3600 * 1000);
+  }
 });
 const wss = new WebSocketServer({ server, path: "/ws" });
 wss.on("connection", (ws, req) => {
