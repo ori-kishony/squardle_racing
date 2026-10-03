@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, acronymFor } from "./db.js";
-import { validateWord } from "./words.js";
+import { validateWord, gridHintCounts, hintThresholds } from "./words.js";
 import {
   getPuzzle,
   ensurePuzzleFor,
@@ -161,6 +161,54 @@ function raceView(raceId, playerId) {
   const reveal = race.status === "done" || meFinished;
   // Grid stays secret until GO (or for finished viewers).
   const grid = race.status === "live" || reveal ? puzzle.grid : null;
+  const reqUpper = puzzle.required.map((w) => String(w).toUpperCase());
+  const reqSet = new Set(reqUpper);
+  const foundWords = myWords.map((w) => w.word);
+  const foundSet = new Set(foundWords);
+  const bonusSet = new Set((puzzle.bonus || []).map((w) => String(w).toUpperCase()));
+  const myBonus = foundWords.filter((w) => bonusSet.has(w) && !reqSet.has(w));
+  const requiredFound = foundWords.filter((w) => reqSet.has(w)).length;
+  // Progressive hints + fade, computed only when the grid is visible.
+  // Counts cover REQUIRED words only (bonus excluded, like the original perks)
+  // so no missing-word info leaks beyond per-cell totals.
+  let hints = null;
+  let faded = null;
+  if (grid) {
+    const { wordStarts, wordUses } = gridHintCounts(puzzle.grid, reqUpper);
+    const { startAt, useAt } = hintThresholds(reqUpper.length);
+    const startUnlocked = requiredFound >= startAt;
+    const useUnlocked = requiredFound >= useAt;
+    // Counts cover only words you have NOT found yet, so they tick down
+    // as you play (like the original). Bonus words never counted.
+    const startCounts = Array(9).fill(0);
+    const useCounts = Array(9).fill(0);
+    for (let k = 0; k < reqUpper.length; k++) {
+      if (foundSet.has(reqUpper[k])) continue;
+      for (const c of wordStarts[k]) startCounts[c]++;
+      for (const c of wordUses[k]) useCounts[c]++;
+    }
+    hints = {
+      startAt,
+      useAt,
+      startUnlocked,
+      useUnlocked,
+      // Counts released only once unlocked (progressive, like the original).
+      startCounts: startUnlocked ? startCounts : null,
+      useCounts: useUnlocked ? useCounts : null,
+    };
+    // A square fades once YOU found every required word using it (original rule).
+    faded = Array(9).fill(false);
+    for (let i = 0; i < 9; i++) {
+      let uses = 0, found = 0;
+      for (let k = 0; k < reqUpper.length; k++) {
+        if (wordUses[k].has(i)) {
+          uses++;
+          if (foundSet.has(reqUpper[k])) found++;
+        }
+      }
+      faded[i] = uses > 0 && found === uses;
+    }
+  }
   return {
     race: { id: race.id, roomCode: race.room_code, date: race.puzzle_date, status: race.status, startsAt: race.starts_at, serverNow: now() },
     players: players.map((p) => ({
@@ -170,7 +218,11 @@ function raceView(raceId, playerId) {
     grid,
     requiredCount: puzzle.required.length,
     bonusCount: puzzle.bonus.length,
-    myWords: myWords.map((w) => w.word),
+    myWords: foundWords,
+    myBonus,
+    requiredFound,
+    hints,
+    faded,
     myFinished: meFinished,
     myReady: me?.ready === 1,
   };

@@ -13,7 +13,13 @@ const S = {
   date: "",
   grid: null,
   myWords: new Set(),
+  myBonus: new Set(),
+  requiredFound: 0,
+  requiredTotal: 0,
+  hints: null,
+  faded: null,
   path: [],
+  lastPath: [],
   timer: null,
   ws: null,
   serverSkew: 0,
@@ -101,8 +107,16 @@ function render(v) {
     show("raceView");
     if (v.grid) buildBoard(v.grid);
     $("reqTotal").textContent = v.requiredCount;
+    S.requiredTotal = v.requiredCount;
+    S.requiredFound = v.requiredFound ?? v.myWords.length;
     S.myWords = new Set(v.myWords);
+    S.myBonus = new Set(v.myBonus || []);
+    // "stale" = server predates the hints fields (needs `npm start` restart).
+    S.hints = v.hints === undefined ? "stale" : v.hints;
+    S.faded = v.faded || null;
+    paintHints();
     paintFound(v);
+    paintProgress();
     if (v.myFinished || v.race.status === "done") loadResults();
   }
   if (v.grid) $("board").classList.remove("blurred");
@@ -131,7 +145,7 @@ function stopCountdown() {
   $("countdownOverlay").classList.add("hidden");
 }
 
-// ---------- board ----------
+// ---------- board (original-style tiles + drag line) ----------
 function buildBoard(grid) {
   if (S.grid && S.grid.join("") === grid.join("")) return;
   S.grid = grid;
@@ -141,10 +155,48 @@ function buildBoard(grid) {
   grid.forEach((ch, i) => {
     const btn = document.createElement("button");
     btn.className = "cell";
-    btn.textContent = ch;
     btn.dataset.i = i;
+    const letter = document.createElement("span");
+    letter.className = "letter";
+    letter.textContent = ch;
+    const start = document.createElement("span");
+    start.className = "corner start";
+    const use = document.createElement("span");
+    use.className = "corner use";
+    btn.append(letter, start, use);
     b.appendChild(btn);
   });
+  requestAnimationFrame(redrawSvg);
+}
+
+function fmtCount(n) {
+  if (!n) return "";
+  return n >= 10 ? "+" : String(n);
+}
+
+// Progressive red/gray corner numbers + fade (mirror of the original perks).
+function paintHints() {
+  const cells = $("board").children;
+  if (!cells.length) return;
+  const h = S.hints;
+  for (let i = 0; i < cells.length; i++) {
+    const startEl = cells[i].querySelector(".corner.start");
+    const useEl = cells[i].querySelector(".corner.use");
+    if (startEl) startEl.textContent = h && h.startUnlocked && h.startCounts ? fmtCount(h.startCounts[i]) : "";
+    if (useEl) useEl.textContent = h && h.useUnlocked && h.useCounts ? fmtCount(h.useCounts[i]) : "";
+    cells[i].classList.toggle("faded", !!(S.faded && S.faded[i]));
+  }
+  if (!h) {
+    $("hintNote").textContent = "";
+  } else if (h === "stale") {
+    $("hintNote").textContent = "Hints need the new server code — restart `npm start`.";
+  } else if (!h.startUnlocked) {
+    $("hintNote").textContent = `Find ${h.startAt} words to reveal starting-letter counts.`;
+  } else if (!h.useUnlocked) {
+    $("hintNote").textContent = `Find ${h.useAt} words to reveal tile-usage counts.`;
+  } else {
+    $("hintNote").textContent = "Red = words starting here · gray = words using this square.";
+  }
 }
 
 function cellAt(i) { return $("board").children[i]; }
@@ -153,11 +205,39 @@ function adjacent(a, b) {
   return Math.max(Math.abs(ar - br), Math.abs(ac - bc)) === 1;
 }
 
+function cellCenter(i) {
+  const box = $("boardBox").getBoundingClientRect();
+  const r = cellAt(i).getBoundingClientRect();
+  return { x: r.left - box.left + r.width / 2, y: r.top - box.top + r.height / 2 };
+}
+
+function redrawSvg() {
+  const svg = $("dragSvg");
+  const box = $("boardBox").getBoundingClientRect();
+  svg.setAttribute("viewBox", `0 0 ${box.width} ${box.height}`);
+  svg.innerHTML = "";
+  if (!S.path.length) return;
+  const ns = "http://www.w3.org/2000/svg";
+  const pts = S.path.map(cellCenter).map((p) => `${p.x},${p.y}`).join(" ");
+  const line = document.createElementNS(ns, "polyline");
+  line.setAttribute("points", pts);
+  svg.appendChild(line);
+  for (const p of S.path.map(cellCenter)) {
+    const c = document.createElementNS(ns, "circle");
+    c.setAttribute("cx", p.x);
+    c.setAttribute("cy", p.y);
+    c.setAttribute("r", 7);
+    svg.appendChild(c);
+  }
+}
+
 function paintPath() {
   [...$("board").children].forEach((c) => c.classList.remove("sel"));
   for (const i of S.path) cellAt(i).classList.add("sel");
   $("wordText").textContent = S.path.map((i) => S.grid[i]).join("");
+  redrawSvg();
 }
+window.addEventListener("resize", () => redrawSvg());
 
 let dragging = false;
 let dragPointerId = null;
@@ -196,13 +276,42 @@ function endDrag(e) {
   dragPointerId = null;
   if (!S.grid) return;
   const w = S.path.map((i) => S.grid[i]).join("");
+  S.lastPath = [...S.path];
   S.path = [];
   paintPath();
   if (w.length >= 3) submitWord(w);
 }
 document.addEventListener("pointerup", endDrag);
 document.addEventListener("pointercancel", () => { dragging = false; dragPointerId = null; S.path = []; paintPath(); });
-$("clearBtn").onclick = () => { S.path = []; paintPath(); };
+
+let toastTimer = null;
+function toast(text) {
+  const m = $("msg");
+  m.textContent = text;
+  m.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => m.classList.add("hidden"), 1800);
+}
+
+function popCells(cells) {
+  for (const i of cells) {
+    const el = cellAt(i);
+    if (!el) continue;
+    el.classList.remove("pop");
+    void el.offsetWidth;
+    el.classList.add("pop");
+  }
+  setTimeout(() => {
+    for (const i of cells) cellAt(i)?.classList.remove("pop");
+  }, 500);
+}
+
+function shakeBoard() {
+  const box = $("boardBox");
+  box.classList.remove("shake");
+  void box.offsetWidth;
+  box.classList.add("shake");
+}
 
 async function submitWord(w) {
   try {
@@ -211,18 +320,53 @@ async function submitWord(w) {
       body: JSON.stringify({ playerId: S.playerId, word: w }),
     });
     if (!r.ok) {
-      $("msg").textContent = r.reason === "already" ? "Already found" : r.reason === "not-in-list" ? "Not in word list" : r.reason === "no-path" ? "No path on grid" : r.reason;
+      shakeBoard();
+      toast(r.reason === "already" ? "Already found" : r.reason === "not-in-list" ? "Not in word list" : r.reason === "no-path" ? "No path on grid" : r.reason);
       return;
     }
-    $("msg").textContent = r.isBonus ? `${r.word} (bonus!)` : r.word;
+    popCells(S.lastPath);
+    toast(r.isBonus ? `${r.word} (bonus!)` : r.word);
     await sync();
-    if (r.finished) { $("msg").textContent = `🏁 100% — waiting for the group…`; loadResults(); }
-  } catch (e) { $("msg").textContent = e.message; }
+    if (r.finished) { toast(`🏁 100% — waiting for the group…`); loadResults(); }
+  } catch (e) { toast(e.message); }
+}
+
+function paintProgress() {
+  const found = S.requiredFound;
+  const total = S.requiredTotal || "?";
+  $("progressFound").textContent = found;
+  $("progressTotal").textContent = total;
+  const bar = $("starBar");
+  bar.innerHTML = "";
+  const frac = typeof total === "number" && total > 0 ? found / total : 0;
+  for (let s = 0; s < 5; s++) {
+    if (s > 0) {
+      const seg = document.createElement("span");
+      seg.className = "bar" + (frac >= (s + 0.5) / 5 ? " on" : "");
+      bar.appendChild(seg);
+    }
+    const star = document.createElement("span");
+    star.className = "star" + (frac >= (s + 0.5) / 5 ? " on" : "");
+    star.textContent = "★";
+    bar.appendChild(star);
+  }
 }
 
 function paintFound(v) {
-  $("foundCount").textContent = v.myWords.length;
-  $("foundList").innerHTML = [...v.myWords].sort().map((w) => `<li>${w}</li>`).join("");
+  $("foundCount").textContent = S.requiredFound;
+  const groups = new Map();
+  for (const w of S.myWords) {
+    // Required count drives progress; bonus chips styled yellow either way.
+    const len = w.length;
+    if (!groups.has(len)) groups.set(len, []);
+    groups.get(len).push(w);
+  }
+  const lens = [...groups.keys()].sort((a, b) => a - b);
+  $("foundGroups").innerHTML = lens.length
+    ? lens.map((len) => `<div class="foundGroup"><h4>${len} letters</h4><div class="wordChips">${
+        groups.get(len).sort().map((w) => `<span class="wordChip ${S.myBonus.has(w) ? "bonus" : ""}">${w}</span>`).join("")
+      }</div></div>`).join("")
+    : `<p class="hint">Drag across letters to find words.</p>`;
 }
 
 $("giveUpBtn").onclick = async () => {
