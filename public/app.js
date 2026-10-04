@@ -385,8 +385,6 @@ async function submitWord(w) {
     }
     popCells(S.lastPath);
     S.lastFoundWord = r.word;
-    $("inlineDef").classList.add("hidden");
-    $("inlineDef").textContent = "";
     paintPath();
     toast(r.isBonus ? `${r.word} (bonus!)` : r.word);
     await sync();
@@ -507,22 +505,19 @@ async function fetchDefinition(url) {
     clearTimeout(timeout);
   }
 }
-async function showDef(word, inline = false) {
+async function showDef(word) {
   const w = String(word || "").toUpperCase();
   const lookupId = ++defLookupId;
-  const target = inline ? $("inlineDef") : $("defText");
-  if (!inline) {
-    $("defModal").classList.remove("hidden");
-    $("defWord").textContent = w;
-  } else target.classList.remove("hidden");
-  if (defCache.has(w)) { target.textContent = defCache.get(w); return; }
-  target.textContent = "Looking up…";
+  $("defModal").classList.remove("hidden");
+  $("defWord").textContent = w;
+  if (defCache.has(w)) { $("defText").textContent = defCache.get(w); return; }
+  $("defText").textContent = "Looking up…";
   try {
     const local = await fetch(`/api/races/${encodeURIComponent(S.raceId)}/definition?playerId=${encodeURIComponent(S.playerId)}&word=${encodeURIComponent(w)}`);
     if (local.ok) {
       const { definition } = await local.json();
       defCache.set(w, definition);
-      if (lookupId === defLookupId) target.textContent = definition;
+      if (lookupId === defLookupId) $("defText").textContent = definition;
       return;
     }
   } catch { /* use the live providers if the local cache is unavailable */ }
@@ -546,15 +541,15 @@ async function showDef(word, inline = false) {
   try {
     const definition = await Promise.any([fromDictionaryApi(), fromWiktionary()]);
     defCache.set(w, definition);
-    if (lookupId === defLookupId) target.textContent = definition;
+    if (lookupId === defLookupId) $("defText").textContent = definition;
   } catch {
-    if (lookupId === defLookupId) target.textContent = "No definition found.";
+    if (lookupId === defLookupId) $("defText").textContent = "No definition found.";
   }
 }
 document.addEventListener("click", (e) => {
   const chip = e.target.closest?.(".wordChip[data-word]");
   if (chip) showDef(chip.dataset.word);
-  if (e.target.closest?.("#wordText") && S.lastFoundWord) showDef(S.lastFoundWord, true);
+  if (e.target.closest?.("#wordText") && S.lastFoundWord) showDef(S.lastFoundWord);
   if (e.target.closest?.("#defClose") || e.target.id === "defModal") {
     defLookupId++;
     $("defModal").classList.add("hidden");
