@@ -38,7 +38,7 @@ The grid is hidden from the API until the countdown hits zero, so early joiners 
 2. Everyone presses `I'm Ready`. **All** must be ready (late join drops countdown back to lobby).
 3. 5-second server-synced countdown → `GO`, grid unblurs for everyone.
 4. Live strip shows running order as acronym chips (`1. AK › 2. JM`), no counts.
-5. First to 100% becomes King (streak = consecutive wins, reign = days). Others keep racing for 2nd/3rd.
+5. First to 100% becomes King; completed racers are ranked by finish time. Results show each player's all-time wins in the room alongside their race stats.
 6. Your full results + counts unlock when *you* finish; group table when the race closes.
 
 ## Tests

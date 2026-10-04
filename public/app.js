@@ -4,6 +4,15 @@ const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
 };
+const roomUsersKey = "roomUsers";
+function savedRooms() {
+  try { return JSON.parse(store.get(roomUsersKey) || "{}"); } catch { return {}; }
+}
+function saveRoomUser(roomCode) {
+  const users = savedRooms();
+  users[roomCode] = { nickname: S.nickname, playerId: S.playerId, raceId: S.raceId };
+  store.set(roomUsersKey, JSON.stringify(users));
+}
 
 const S = {
   roomCode: store.get("roomCode") || "KINGS",
@@ -27,6 +36,7 @@ const S = {
   wordTab: "today",
   myWordsOrdered: [],
   lengthBreakdown: null,
+  bonusCount: 0,
   myAccuracy: 1,
   invalidGuesses: 0,
 };
@@ -55,7 +65,7 @@ async function refreshKing() {
     if (k.king) {
       $("kingBanner").classList.remove("hidden");
       $("kingBanner").textContent =
-        `👑 King ${k.king.nickname} — ${k.reignDays}-day reign · ${k.streak}-win streak`;
+        `👑 King ${k.king.nickname} — ${k.reignDays}-day reign · ${k.streak}-win streak · ${k.totalWins} total wins`;
     } else $("kingBanner").classList.add("hidden");
   } catch { /* no king yet */ }
 }
@@ -73,9 +83,21 @@ $("joinBtn").onclick = async () => {
   });
   S.playerId = j.playerId; S.raceId = j.raceId; S.date = j.date;
   store.set("playerId", S.playerId); store.set("raceId", S.raceId);
+  saveRoomUser(S.roomCode);
+  $("changeRoomBtn").classList.remove("hidden");
   connect();
   await sync();
   await refreshKing();
+};
+
+$("roomCode").addEventListener("input", () => {
+  const saved = savedRooms()[($("roomCode").value || "KINGS").trim().toUpperCase()];
+  if (saved?.nickname) $("nickname").value = saved.nickname;
+});
+$("changeRoomBtn").onclick = () => {
+  $("roomCode").value = S.roomCode;
+  $("nickname").value = savedRooms()[S.roomCode]?.nickname || S.nickname;
+  show("joinView");
 };
 
 $("readyBtn").onclick = async () => {
@@ -110,8 +132,11 @@ function render(v) {
   else stopCountdown();
 
   if (v.race.status === "live" || v.race.status === "done") {
-    if ($("raceView").classList.contains("hidden")) { S.wordTab = S.wordTab || "today"; }
-    show("raceView");
+    const resultsUnlocked = v.myFinished || v.race.status === "done";
+    if (!resultsUnlocked) {
+      if ($("raceView").classList.contains("hidden")) { S.wordTab = S.wordTab || "today"; }
+      show("raceView");
+    }
     if (v.grid) buildBoard(v.grid);
     $("reqTotal").textContent = v.requiredCount;
     S.requiredTotal = v.requiredCount;
@@ -120,6 +145,7 @@ function render(v) {
     S.myWordsOrdered = v.myWordsOrdered || v.myWords.map((w) => ({ word: w }));
     S.myBonus = new Set(v.myBonus || []);
     S.lengthBreakdown = v.lengthBreakdown || null;
+    S.bonusCount = v.bonusCount || 0;
     S.myAccuracy = v.myAccuracy ?? 1;
     S.invalidGuesses = v.invalidGuesses || 0;
     // "stale" = server predates the hints fields (needs `npm start` restart).
@@ -128,7 +154,7 @@ function render(v) {
     paintHints();
     paintWordList();
     paintProgress();
-    if (v.myFinished || v.race.status === "done") loadResults();
+    if (resultsUnlocked) loadResults();
   }
   if (v.grid) $("board").classList.remove("blurred");
 }
@@ -254,7 +280,17 @@ let dragging = false;
 let dragPointerId = null;
 function cellFromPoint(x, y) {
   const el = document.elementFromPoint(x, y);
-  return el && el.closest ? el.closest(".cell") : null;
+  const cell = el && el.closest ? el.closest(".cell") : null;
+  if (!cell) return null;
+
+  // Shrink the effective target inward from each tile edge. This leaves a
+  // small dead zone at corners/gaps, making diagonal swipes less likely to
+  // pick up an unintended neighboring tile.
+  const r = cell.getBoundingClientRect();
+  const insetX = r.width * 0.15;
+  const insetY = r.height * 0.15;
+  return x >= r.left + insetX && x <= r.right - insetX &&
+    y >= r.top + insetY && y <= r.bottom - insetY ? cell : null;
 }
 function pushCell(cell) {
   if (!cell) return;
@@ -268,7 +304,7 @@ function pushCell(cell) {
   paintPath();
 }
 document.addEventListener("pointerdown", (e) => {
-  const c = e.target.closest?.(".cell");
+  const c = cellFromPoint(e.clientX, e.clientY);
   if (!c || !S.grid || $("board").classList.contains("blurred")) return;
   e.preventDefault();
   dragging = true;
@@ -385,6 +421,8 @@ function paintWordList() {
     $("lenSummary").innerHTML = S.lengthBreakdown
       .map((g) => `<span class="lenChip${g.found >= g.total ? " done" : ""}">${g.len}L: ${g.found}/${g.total}</span>`)
       .join("");
+    const bonusFound = orderBonusWords().length;
+    if (S.bonusCount) $("lenSummary").innerHTML += `<span class="lenChip">Bonus: ${bonusFound}/${S.bonusCount}</span>`;
   } else $("lenSummary").innerHTML = "";
   paintFound();
 }
@@ -392,7 +430,9 @@ function paintWordList() {
 function paintFound() {
   const order = S.myWordsOrdered && S.myWordsOrdered.length ? S.myWordsOrdered : [...S.myWords].map((word) => ({ word }));
   const groups = new Map();
+  const bonus = [];
   for (const e of order) {
+    if (e.isBonus || S.myBonus.has(e.word)) { bonus.push(e); continue; }
     const w = e.word;
     const len = w.length;
     if (!groups.has(len)) groups.set(len, []);
@@ -401,7 +441,7 @@ function paintFound() {
   const totals = new Map((S.lengthBreakdown || []).map((g) => [g.len, g.total]));
   const lens = [...new Set([...groups.keys(), ...totals.keys()])].sort((a, b) => a - b);
   const byFound = S.wordSort === "found";
-  $("foundGroups").innerHTML = lens.length
+  const regularHtml = lens.length
     ? lens.map((len) => {
         let chips = groups.get(len) || [];
         if (!byFound) chips = [...chips].sort((a, b) => (a.word < b.word ? -1 : 1));
@@ -413,7 +453,18 @@ function paintFound() {
             : `<span class="hint">—</span>`
         }</div></div>`;
       }).join("")
+    : ``;
+  const sortedBonus = byFound ? bonus : [...bonus].sort((a, b) => (a.word < b.word ? -1 : 1));
+  const bonusHtml = S.bonusCount ? `<div class="foundGroup"><h4>Bonus words — ${bonus.length}/${S.bonusCount}</h4><div class="wordChips">${sortedBonus.length
+    ? sortedBonus.map((e) => `<button class="wordChip bonus" data-word="${e.word}">${e.word}</button>`).join("")
+    : `<span class="hint">—</span>`}</div></div>` : "";
+  $("foundGroups").innerHTML = regularHtml || bonusHtml
+    ? regularHtml + bonusHtml
     : `<p class="hint">Drag across letters to find words.</p>`;
+}
+
+function orderBonusWords() {
+  return (S.myWordsOrdered || []).filter((e) => e.isBonus || S.myBonus.has(e.word));
 }
 
 // Tap a word → definition (free dictionary API, cached, Wiktionary fallback).
@@ -455,7 +506,6 @@ $("tabToday").onclick = () => { S.wordTab = "today"; paintWordList(); };
 $("tabYesterday").onclick = () => { S.wordTab = "yesterday"; paintWordList(); };
 $("sortAZ").onclick = () => { S.wordSort = "az"; paintWordList(); };
 $("sortFound").onclick = () => { S.wordSort = "found"; paintWordList(); };
-$("tiebreakSel").onchange = () => loadResults(true);
 
 async function loadYesterday() {
   const pane = $("yesterdayPane");
@@ -494,16 +544,13 @@ function paintRank(order) {
 
 async function loadResults(force) {
   try {
-    const tb = $("tiebreakSel") ? $("tiebreakSel").value : "";
-    const r = await api(`/api/races/${S.raceId}/results?playerId=${encodeURIComponent(S.playerId)}${tb ? `&tiebreak=${encodeURIComponent(tb)}` : ""}`);
-    show("resultsView");
-    if (S.grid) { /* keep race view accessible via back */ }
+    const r = await api(`/api/races/${S.raceId}/results?playerId=${encodeURIComponent(S.playerId)}`);
     show("resultsView");
     $("standings").innerHTML = r.standings
-      .map((s) => `<li><button class="linklike" data-acronym="${escapeHtml(s.acronym)}"><b>${s.rank}. ${s.acronym}</b></button> ${escapeHtml(s.nickname)} — ${s.count}/${s.requiredTotal} +${s.bonus || 0} bonus · 🎯 ${fmtAcc(s.accuracy)}${s.finishedMs != null ? ` in ${fmtMs(s.finishedMs)}` : s.gaveUp ? " (gave up)" : " (racing…)"}</li>`)
+      .map((s) => `<li><button class="linklike" data-acronym="${escapeHtml(s.acronym)}"><b>${s.rank}. ${s.acronym}</b></button> ${escapeHtml(s.nickname)} — ${s.count}/${s.requiredTotal} +${s.bonus || 0} bonus · 🎯 ${fmtAcc(s.accuracy)} · 👑 ${s.wins} wins${s.finishedMs != null ? ` in ${fmtMs(s.finishedMs)}` : s.gaveUp ? " (gave up)" : " (racing…)"}</li>`)
       .join("");
     $("hardest").innerHTML = r.hardest
-      .map((h) => `<li><button class="wordChip" data-word="${h.word}">${h.word}</button> — found by ${h.foundBy}/${h.totalPlayers}${h.firstBy ? `, first: ${h.firstBy}` : ""}</li>`)
+      .map((h) => `<li><button class="wordChip" data-word="${h.word}">${h.word}</button> — avg ${fmtMs(h.avgMs)}${h.firstBy ? `, first: ${h.firstBy}` : ""}</li>`)
       .join("");
     const me = r.standings.find((s) => s.playerId === S.playerId);
     const won = me && me.rank === 1 && me.finishedMs != null;
@@ -580,6 +627,15 @@ $("adminSave").onclick = async () => {
 // auto-resume + ?room= invite links
 const q = new URLSearchParams(location.search);
 if (q.get("room")) { S.roomCode = q.get("room").toUpperCase(); $("roomCode").value = S.roomCode; }
+const initialRoomUser = savedRooms()[S.roomCode];
+if (initialRoomUser) {
+  S.nickname = initialRoomUser.nickname || S.nickname;
+  S.playerId = initialRoomUser.playerId || "";
+  S.raceId = initialRoomUser.raceId || "";
+  $("nickname").value = S.nickname;
+} else if (S.roomCode !== store.get("roomCode")) {
+  S.playerId = ""; S.raceId = "";
+}
 (async function resume() {
   if (!S.playerId || !S.raceId) return;
   try {
@@ -596,9 +652,12 @@ if (q.get("room")) { S.roomCode = q.get("room").toUpperCase(); $("roomCode").val
       });
       S.playerId = j.playerId; S.raceId = j.raceId; S.date = j.date;
       store.set("playerId", S.playerId); store.set("raceId", S.raceId);
+      saveRoomUser(S.roomCode);
     }
+    saveRoomUser(S.roomCode);
   } catch { /* stored session invalid: user joins fresh via the form */ }
   connect();
+  $("changeRoomBtn").classList.remove("hidden");
   await sync().catch(() => {});
   await refreshKing();
 })();

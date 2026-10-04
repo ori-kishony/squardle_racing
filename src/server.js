@@ -58,7 +58,7 @@ const lastFindAt = (raceId, playerId) =>
     .prepare("SELECT MAX(found_at) AS t FROM finds WHERE race_id = ? AND player_id = ?")
     .get(raceId, playerId).t ?? 0;
 
-function rankOrder(race, tiebreak = "") {
+function rankOrder(race) {
   const players = racePlayers(race.id);
   const stats = players.map((p) => {
     const { count, bonus } = playerTallies(race.id, p.id);
@@ -70,24 +70,12 @@ function rankOrder(race, tiebreak = "") {
       lastAt: lastFindAt(race.id, p.id),
     };
   });
-  // Leaderboard tiebreaks (original: score, then bonus | accuracy | speed).
-  // `tiebreak` optionally forces one secondary first; default chains all:
-  // required desc → bonus desc → accuracy desc → speed (earliest) asc.
-  const cmpUnfinished = (a, b) => {
-    if (b.count !== a.count) return b.count - a.count;
-    if (tiebreak === "accuracy" && b.accuracy !== a.accuracy) return b.accuracy - a.accuracy;
-    if (tiebreak === "speed") return a.lastAt - b.lastAt;
-    // default ("bonus" or ""): bonus, then accuracy, then speed
-    if (b.bonus !== a.bonus) return b.bonus - a.bonus;
-    if (tiebreak !== "bonus" && b.accuracy !== a.accuracy) return b.accuracy - a.accuracy;
-    return a.lastAt - b.lastAt;
-  };
   const finished = stats
     .filter((p) => p.finishedAt)
-    .sort((a, b) => a.finishedAt - b.finishedAt || b.bonus - a.bonus || b.accuracy - a.accuracy);
+    .sort((a, b) => a.finishedAt - b.finishedAt);
   const unfinished = stats
     .filter((p) => !p.finishedAt)
-    .sort(cmpUnfinished);
+    .sort((a, b) => b.count - a.count || a.lastAt - b.lastAt);
   return [...finished, ...unfinished];
 }
 
@@ -372,7 +360,7 @@ app.get("/api/races/:id/rank", (req, res) => {
   if (!race) return res.status(404).json({ error: "race not found" });
   tickRace(race);
   race = getRace(req.params.id);
-  const order = rankOrder(race, String(req.query.tiebreak || ""));
+  const order = rankOrder(race);
   const playerId = String(req.query.playerId || "");
   const me = racePlayers(race.id).find((p) => p.id === playerId);
   const reveal = race.status === "done" || !!me?.finishedAt;
@@ -396,20 +384,33 @@ app.get("/api/races/:id/results", (req, res) => {
   if (race.status !== "done" && !me?.finishedAt)
     return res.status(403).json({ error: "results unlock when you finish or the race ends" });
   const puzzle = getPuzzle(race.puzzle_date);
-  const order = rankOrder(race, String(req.query.tiebreak || ""));
+  const order = rankOrder(race);
+  const winsByPlayer = new Map(db.prepare(
+    "SELECT player_id AS playerId, COUNT(*) AS wins FROM king_history WHERE room_code = ? GROUP BY player_id"
+  ).all(race.room_code).map((row) => [row.playerId, row.wins]));
   const startMs = race.starts_at;
-  // Per-word difficulty: found-by count, avg time, first finder.
+  // Per-word difficulty uses average elapsed time across every racer.
+  // Players who have not found a word yet contribute their elapsed race time.
+  const players = racePlayers(race.id);
+  const playersById = new Map(players.map((p) => [p.id, p]));
+  const snapshotMs = now();
   const wordStats = puzzle.required.map((word) => {
     const rows = db.prepare("SELECT player_id AS pid, found_at AS t FROM finds WHERE race_id = ? AND word = ? ORDER BY found_at").all(race.id, word);
-    const playerCount = racePlayers(race.id).length || 1;
+    const foundTimes = new Map(rows.map((r) => [r.pid, r.t - startMs]));
+    const playerCount = players.length || 1;
+    const totalMs = players.reduce((sum, p) => {
+      if (foundTimes.has(p.id)) return sum + foundTimes.get(p.id);
+      const stopAt = p.finishedAt || snapshotMs;
+      return sum + Math.max(0, stopAt - startMs);
+    }, 0);
     return {
       word,
       foundBy: rows.length,
       totalPlayers: playerCount,
-      avgMs: rows.length ? Math.round(rows.reduce((s, r) => s + (r.t - startMs), 0) / rows.length) : null,
-      firstBy: rows[0] ? racePlayers(race.id).find((p) => p.id === rows[0].pid)?.acronym : null,
+      avgMs: Math.round(totalMs / playerCount),
+      firstBy: rows[0] ? playersById.get(rows[0].pid)?.acronym : null,
     };
-  }).sort((a, b) => a.foundBy - b.foundBy || (b.avgMs ?? 0) - (a.avgMs ?? 0));
+  }).sort((a, b) => b.avgMs - a.avgMs);
   // Lead-change timeline from find events.
   const events = db.prepare("SELECT player_id AS pid, found_at AS t FROM finds WHERE race_id = ? ORDER BY found_at").all(race.id);
   const counts = new Map();
@@ -430,6 +431,7 @@ app.get("/api/races/:id/results", (req, res) => {
       count: p.count, bonus: p.bonus, accuracy: p.accuracy,
       requiredTotal: puzzle.required.length,
       finishedMs: p.finishedAt ? p.finishedAt - startMs : null, gaveUp: p.gaveUp === 1,
+      wins: winsByPlayer.get(p.id) || 0,
     })),
     hardest: wordStats.slice(0, Math.min(5, wordStats.length)),
     wordStats,
@@ -466,7 +468,8 @@ app.get("/api/rooms/:code/king", (req, res) => {
     else break;
   }
   const reignDays = Math.max(1, Math.ceil((now() - last.won_at) / 86400000));
-  res.json({ king: { nickname: player.nickname, acronym: player.acronym, playerId: player.id }, streak, reignDays, wonAt: last.won_at });
+  const totalWins = db.prepare("SELECT COUNT(*) AS n FROM king_history WHERE room_code = ? AND player_id = ?").get(code, player.id).n;
+  res.json({ king: { nickname: player.nickname, acronym: player.acronym, playerId: player.id }, streak, totalWins, reignDays, wonAt: last.won_at });
 });
 
 // Admin: manual puzzle entry (fallback) + triggered auto-fetch.

@@ -10,6 +10,7 @@
 <header>
   <h1>⚡ Squaredle Express Racing</h1>
   <div id="kingBanner" class="king hidden"></div>
+  <button id="changeRoomBtn" class="hidden">Change room</button>
 </header>
 
 <main>
@@ -76,14 +77,6 @@
   <!-- RESULTS -->
   <section id="resultsView" class="card hidden">
     <h2>Results</h2>
-    <label class="hint">Tiebreak
-      <select id="tiebreakSel">
-        <option value="">Score › bonus › accuracy › speed</option>
-        <option value="bonus">Score › bonus › speed</option>
-        <option value="accuracy">Score › accuracy › speed</option>
-        <option value="speed">Score › speed</option>
-      </select>
-    </label>
     <ol id="standings"></ol>
     <h3>Hardest words</h3>
     <ul id="hardest"></ul>

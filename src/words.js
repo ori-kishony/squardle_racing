@@ -129,8 +129,9 @@ export function validateWord({ grid, required, bonus, word, alreadyFound }) {
     return { ok: false, reason: "not-in-list" };
   if (alreadyFound.has(w))
     return { ok: false, reason: "already", isBonus };
+  // The official word list is authoritative. A submitted spelling can be
+  // valid even when the server cannot reproduce the specific tile path used.
   const path = findPath(grid, w);
-  if (!path) return { ok: false, reason: "no-path", isBonus };
   return { ok: true, word: w, isBonus, path };
 }
 
