@@ -75,8 +75,8 @@ button.danger { background:#f7e3e3; color:#a33; }
 .cell.faded .corner { opacity:.6; }
 @media (max-width: 480px) {
   #boardBox { width:min(100%,72vw,360px); }
-  #board { margin-inline:auto; }
-  .cell { font-size:min(9.36vw,46.8px); }
+  #board { grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:8px auto; }
+  .cell { min-width:0; font-size:min(9vw,44px); }
 }
 #wordPreview { min-height:2.2em; font-size:1.4rem; letter-spacing:.12em; font-weight:700; text-align:center; color:var(--ink); }
 #msg { position:absolute; left:50%; top:8px; transform:translateX(-50%); background:#6b675e; color:#fff; font-size:1rem; border-radius:10px; padding:8px 16px; white-space:nowrap; box-shadow:0 4px 12px rgba(0,0,0,.2); z-index:6; transition:opacity .3s; }
