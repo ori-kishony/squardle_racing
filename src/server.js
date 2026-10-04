@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, acronymFor } from "./db.js";
+import { cachedDefinition } from "./definitions.js";
 import { validateWord, gridHintCounts, hintThresholds, accuracyFor } from "./words.js";
 import {
   getPuzzle,
@@ -438,6 +439,20 @@ app.get("/api/races/:id/results", (req, res) => {
     leadTimeline: timeline,
     date: race.puzzle_date,
   });
+});
+
+app.get("/api/races/:id/definition", (req, res) => {
+  const race = getRace(req.params.id);
+  if (!race) return res.status(404).json({ error: "race not found" });
+  const playerId = String(req.query.playerId || "");
+  const word = String(req.query.word || "").toUpperCase();
+  if (!/^[A-Z]{3,9}$/.test(word)) return res.status(400).json({ error: "invalid word" });
+  const found = db.prepare("SELECT 1 FROM finds WHERE race_id = ? AND player_id = ? AND word = ?")
+    .get(race.id, playerId, word);
+  if (!found) return res.status(403).json({ error: "find the word before viewing its definition" });
+  const definition = cachedDefinition(word);
+  if (!definition) return res.status(404).json({ error: "definition is still loading" });
+  res.json({ definition });
 });
 
 // Room history for the Yesterday tab: past races (no word spoilers,

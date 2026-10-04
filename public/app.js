@@ -486,37 +486,64 @@ function orderBonusWords() {
 
 // Tap a word → definition (free dictionary API, cached, Wiktionary fallback).
 const defCache = new Map();
+let defLookupId = 0;
+async function fetchDefinition(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 7000);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 async function showDef(word) {
   const w = String(word || "").toUpperCase();
+  const lookupId = ++defLookupId;
   $("defModal").classList.remove("hidden");
   $("defWord").textContent = w;
   if (defCache.has(w)) { $("defText").textContent = defCache.get(w); return; }
   $("defText").textContent = "Looking up…";
   try {
-    const r = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${w.toLowerCase()}`);
-    if (r.ok) {
-      const j = await r.json();
-      const d = j?.[0]?.meanings?.[0]?.definitions?.[0]?.definition;
-      if (d) { defCache.set(w, d); $("defText").textContent = d; return; }
+    const local = await fetch(`/api/races/${encodeURIComponent(S.raceId)}/definition?playerId=${encodeURIComponent(S.playerId)}&word=${encodeURIComponent(w)}`);
+    if (local.ok) {
+      const { definition } = await local.json();
+      defCache.set(w, definition);
+      if (lookupId === defLookupId) $("defText").textContent = definition;
+      return;
     }
-    throw new Error("no dict entry");
+  } catch { /* use the live providers if the local cache is unavailable */ }
+  const slug = encodeURIComponent(w.toLowerCase());
+  const fromDictionaryApi = async () => {
+    const r = await fetchDefinition(`https://api.dictionaryapi.dev/api/v2/entries/en/${slug}`);
+    if (!r.ok) throw new Error("No dictionary entry");
+    const j = await r.json();
+    const d = j?.[0]?.meanings?.[0]?.definitions?.[0]?.definition;
+    if (!d) throw new Error("No definition in response");
+    return d;
+  };
+  const fromWiktionary = async () => {
+    const r = await fetchDefinition(`https://en.wiktionary.org/api/rest_v1/page/definition/${slug}`);
+    if (!r.ok) throw new Error("No Wiktionary entry");
+    const j = await r.json();
+    const d = j?.en?.[0]?.definitions?.[0]?.definition;
+    if (!d) throw new Error("No definition in response");
+    return String(d).replace(/<[^>]+>/g, "");
+  };
+  try {
+    const definition = await Promise.any([fromDictionaryApi(), fromWiktionary()]);
+    defCache.set(w, definition);
+    if (lookupId === defLookupId) $("defText").textContent = definition;
   } catch {
-    try {
-      const r2 = await fetch(`https://en.wiktionary.org/api/rest_v1/page/definition/${w.toLowerCase()}`);
-      if (r2.ok) {
-        const j2 = await r2.json();
-        const d2 = j2?.en?.[0]?.definitions?.[0]?.definition;
-        const text = d2 ? String(d2).replace(/<[^>]+>/g, "") : "No definition found.";
-        defCache.set(w, text); $("defText").textContent = text; return;
-      }
-    } catch { /* fall through */ }
-    $("defText").textContent = "No definition found.";
+    if (lookupId === defLookupId) $("defText").textContent = "No definition found.";
   }
 }
 document.addEventListener("click", (e) => {
   const chip = e.target.closest?.(".wordChip[data-word]");
   if (chip) showDef(chip.dataset.word);
-  if (e.target.closest?.("#defClose") || e.target.id === "defModal") $("defModal").classList.add("hidden");
+  if (e.target.closest?.("#defClose") || e.target.id === "defModal") {
+    defLookupId++;
+    $("defModal").classList.add("hidden");
+  }
 });
 
 $("tabToday").onclick = () => { S.wordTab = "today"; paintWordList(); };

@@ -11,6 +11,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findPath } from "./words.js";
+import { prefetchDefinitions } from "./definitions.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const UA = { "User-Agent": "squardle-racing (friends-group, few req/day)" };
@@ -131,6 +132,7 @@ export function savePuzzle({ date, grid, required, bonus = [], source }) {
   if (problems.length)
     console.warn(`puzzle ${date}: ${problems.length} required words have no grid path: ${problems.join(",")}`);
   insertPuzzle({ date, grid, required, bonus, source, overwrite: true });
+  void prefetchDefinitions([...required, ...bonus]);
 }
 
 function insertPuzzle({ date, grid, required, bonus = [], source, overwrite }) {
@@ -198,6 +200,8 @@ export async function refreshOfficialPuzzles() {
     updated++;
   }
   if (officialToday) setOfficialToday(officialToday);
+  const today = puzzles.find((p) => p.date === officialToday);
+  if (today) void prefetchDefinitions([...today.required, ...today.bonus]);
   return { ok: true, count: updated, officialToday };
 }
 

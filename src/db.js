@@ -19,6 +19,11 @@ CREATE TABLE IF NOT EXISTS puzzles (
   bonus TEXT NOT NULL DEFAULT '[]',
   source TEXT NOT NULL DEFAULT 'manual'
 );
+CREATE TABLE IF NOT EXISTS word_definitions (
+  word TEXT PRIMARY KEY,
+  definition TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS rooms (
   code TEXT PRIMARY KEY,
   name TEXT NOT NULL DEFAULT '',
