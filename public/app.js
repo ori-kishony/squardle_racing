@@ -39,6 +39,7 @@ const S = {
   bonusCount: 0,
   myAccuracy: 1,
   invalidGuesses: 0,
+  editingRoom: false,
 };
 $("roomCode").value = S.roomCode;
 if (S.nickname) $("nickname").value = S.nickname;
@@ -84,6 +85,7 @@ $("joinBtn").onclick = async () => {
   S.playerId = j.playerId; S.raceId = j.raceId; S.date = j.date;
   store.set("playerId", S.playerId); store.set("raceId", S.raceId);
   saveRoomUser(S.roomCode);
+  S.editingRoom = false;
   $("changeRoomBtn").classList.remove("hidden");
   connect();
   await sync();
@@ -97,6 +99,7 @@ $("roomCode").addEventListener("input", () => {
 $("changeRoomBtn").onclick = () => {
   $("roomCode").value = S.roomCode;
   $("nickname").value = savedRooms()[S.roomCode]?.nickname || S.nickname;
+  S.editingRoom = true;
   show("joinView");
 };
 
@@ -118,6 +121,8 @@ async function sync() {
 }
 
 function render(v) {
+  // Live refreshes should not dismiss the room form while the user edits it.
+  if (S.editingRoom) return;
   S.date = v.race.date;
   $("lobbyDate").textContent = `· ${v.race.date} · room ${v.race.roomCode}`;
   if (v.race.status === "lobby" || v.race.status === "countdown") {
@@ -385,18 +390,30 @@ function paintProgress() {
   $("progressTotal").textContent = total;
   const bar = $("starBar");
   bar.innerHTML = "";
-  const frac = typeof total === "number" && total > 0 ? found / total : 0;
-  for (let s = 0; s < 5; s++) {
-    if (s > 0) {
-      const seg = document.createElement("span");
-      seg.className = "bar" + (frac >= (s + 0.5) / 5 ? " on" : "");
-      bar.appendChild(seg);
-    }
-    const star = document.createElement("span");
-    star.className = "star" + (frac >= (s + 0.5) / 5 ? " on" : "");
-    star.textContent = "★";
-    bar.appendChild(star);
+  const n = typeof total === "number" && total > 0 ? total : 0;
+  const frac = n ? Math.min(1, found / n) : 0;
+  const hints = S.hints && S.hints !== "stale" ? S.hints : null;
+  const thresholds = hints
+    ? [
+        { count: hints.startAt, label: "Red starting-letter hint" },
+        { count: hints.useAt, label: "Gray tile-usage hint" },
+      ]
+    : [];
+  const track = document.createElement("span");
+  track.className = "hintTrack";
+  const fill = document.createElement("span");
+  fill.className = "hintTrackFill";
+  fill.style.width = `${frac * 100}%`;
+  track.appendChild(fill);
+  for (const { count, label } of thresholds) {
+    const marker = document.createElement("span");
+    marker.className = "hintMarker" + (found >= count ? " on" : "");
+    marker.textContent = "★";
+    marker.title = `Find ${count} words: ${label}`;
+    marker.style.left = `${n ? (count / n) * 100 : 0}%`;
+    track.appendChild(marker);
   }
+  bar.appendChild(track);
 }
 
 function fmtAcc(a) {
