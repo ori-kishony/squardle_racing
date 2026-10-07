@@ -30,6 +30,7 @@ const S = {
   path: [],
   lastPath: [],
   lastFoundWord: "",
+  previewWord: "",
   timer: null,
   ws: null,
   serverSkew: 0,
@@ -213,7 +214,19 @@ function buildBoard(grid) {
     btn.append(letter, start, use);
     b.appendChild(btn);
   });
-  requestAnimationFrame(redrawSvg);
+  resizeBoard();
+}
+
+// Use Squaredle's resizeBoard proportions, including its board-relative unit.
+function resizeBoard() {
+  const box = $("boardBox");
+  box.style.width = "";
+  const width = Math.floor(box.getBoundingClientRect().width);
+  if (!width) return;
+  box.style.width = `${width}px`;
+  box.style.fontSize = `${Math.round(.13 * width)}px`;
+  box.style.setProperty("--unit", `${.014 * width}px`);
+  redrawSvg();
 }
 
 function fmtCount(n) {
@@ -282,11 +295,15 @@ function paintPath() {
   [...$("board").children].forEach((c) => c.classList.remove("sel"));
   for (const i of S.path) cellAt(i).classList.add("sel");
   const preview = $("wordText");
-  preview.textContent = S.path.length ? S.path.map((i) => S.grid[i]).join("") : S.lastFoundWord;
+  preview.textContent = S.path.length ? S.path.map((i) => S.grid[i]).join("") : S.previewWord || S.lastFoundWord;
+  preview.disabled = !!S.path.length || !isFoundWord(preview.textContent);
   preview.classList.toggle("hidden", !preview.textContent);
   redrawSvg();
 }
-window.addEventListener("resize", () => redrawSvg());
+function isFoundWord(word) {
+  return !!word && (word === S.lastFoundWord || S.myWords.has(word) || S.myBonus.has(word));
+}
+window.addEventListener("resize", resizeBoard);
 
 let dragging = false;
 let dragPointerId = null;
@@ -321,6 +338,8 @@ document.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   dragging = true;
   dragPointerId = e.pointerId;
+  clearTimeout(toastTimer);
+  $("msg").classList.add("hidden");
   S.path = [Number(c.dataset.i)];
   paintPath();
 });
@@ -336,17 +355,19 @@ function endDrag(e) {
   if (!S.grid) return;
   const w = S.path.map((i) => S.grid[i]).join("");
   S.lastPath = [...S.path];
+  S.previewWord = w;
   S.path = [];
   paintPath();
-  if (w.length >= 3) submitWord(w);
+  if (w.length >= 3) submitWord(w, S.lastPath);
 }
 document.addEventListener("pointerup", endDrag);
 document.addEventListener("pointercancel", () => { dragging = false; dragPointerId = null; S.path = []; paintPath(); });
 
 let toastTimer = null;
-function toast(text) {
+function toast(text, success = false) {
   const m = $("msg");
   m.textContent = text;
+  m.classList.toggle("success", success);
   m.classList.remove("hidden");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => m.classList.add("hidden"), 1800);
@@ -365,28 +386,27 @@ function popCells(cells) {
   }, 500);
 }
 
-function shakeBoard() {
-  const box = $("boardBox");
-  box.classList.remove("shake");
-  void box.offsetWidth;
-  box.classList.add("shake");
+// Original Solution.scoreWord values. Bonus words do not earn points.
+function wordPoints(word) {
+  const scores = [0, 0, 0, 0, 5, 8, 12, 16, 22, 30, 38, 46, 58, 68, 80, 90, 100];
+  return scores[word.length] ?? (word.length - 1) * (word.length - 2) / 2;
 }
 
-async function submitWord(w) {
+async function submitWord(w, path) {
   try {
     const r = await api(`/api/races/${S.raceId}/words`, {
       method: "POST",
       body: JSON.stringify({ playerId: S.playerId, word: w }),
     });
     if (!r.ok) {
-      if (r.reason !== "already") shakeBoard();
       toast(r.reason === "already" ? "Already found" : r.reason === "not-in-list" ? "Not in word list" : r.reason === "no-path" ? "No path on grid" : r.reason);
       return;
     }
-    popCells(S.lastPath);
+    popCells(path);
     S.lastFoundWord = r.word;
     paintPath();
-    toast(r.isBonus ? `${r.word} (bonus!)` : r.word);
+    const points = wordPoints(r.word);
+    toast(r.isBonus ? "Bonus word found!" : `+${points} point${points === 1 ? "" : "s"}`, true);
     await sync();
     if (r.finished) { toast(`🏁 100% — waiting for the group…`); loadResults(); }
   } catch (e) { toast(e.message); }
@@ -549,7 +569,8 @@ async function showDef(word) {
 document.addEventListener("click", (e) => {
   const chip = e.target.closest?.(".wordChip[data-word]");
   if (chip) showDef(chip.dataset.word);
-  if (e.target.closest?.("#wordText") && S.lastFoundWord) showDef(S.lastFoundWord);
+  const preview = e.target.closest?.("#wordText");
+  if (preview && !preview.disabled && isFoundWord(preview.textContent)) showDef(preview.textContent);
   if (e.target.closest?.("#defClose") || e.target.id === "defModal") {
     defLookupId++;
     $("defModal").classList.add("hidden");
