@@ -114,6 +114,14 @@ $("readyBtn").onclick = async () => {
   await sync();
 };
 
+$("startBtn").onclick = async () => {
+  await api(`/api/races/${S.raceId}/start`, {
+    method: "POST",
+    body: JSON.stringify({ playerId: S.playerId }),
+  });
+  await sync();
+};
+
 async function sync() {
   if (!S.raceId) return null;
   const v = await api(`/api/races/${S.raceId}?playerId=${encodeURIComponent(S.playerId)}`);
@@ -134,6 +142,8 @@ function render(v) {
       .join("");
     const me = v.players.find((p) => p.playerId === S.playerId);
     $("readyBtn").textContent = me && me.ready ? "Not ready" : "I'm Ready";
+    const allReady = v.players.length >= 2 && v.players.every((p) => p.ready);
+    $("startBtn").classList.toggle("hidden", v.race.status !== "lobby" || !allReady);
   }
   if (v.race.status === "countdown") startCountdown(v.race.startsAt);
   else stopCountdown();

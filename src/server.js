@@ -91,11 +91,6 @@ function tickRace(race) {
     const players = racePlayers(race.id);
     const allReady =
       players.length >= 2 && players.every((p) => p.ready === 1);
-    if (race.status === "lobby" && allReady) {
-      db.prepare("UPDATE races SET status = 'countdown', starts_at = ? WHERE id = ?")
-        .run(t + COUNTDOWN_MS, race.id);
-      return true;
-    }
     if (race.status === "countdown" && !allReady) {
       db.prepare("UPDATE races SET status = 'lobby', starts_at = NULL WHERE id = ?")
         .run(race.id);
@@ -290,6 +285,24 @@ app.post("/api/races/:id/ready", (req, res) => {
   if (!row) return res.status(404).json({ error: "player not in race" });
   db.prepare("UPDATE race_players SET ready = ? WHERE race_id = ? AND player_id = ?")
     .run(ready ? 1 : 0, race.id, playerId);
+  tickAndBroadcast(race.id);
+  res.json(raceView(race.id, playerId));
+});
+
+app.post("/api/races/:id/start", (req, res) => {
+  const race = getRace(req.params.id);
+  if (!race) return res.status(404).json({ error: "race not found" });
+  if (race.status !== "lobby")
+    return res.status(409).json({ error: "race has already started" });
+  const { playerId } = req.body || {};
+  const player = db.prepare("SELECT 1 FROM race_players WHERE race_id = ? AND player_id = ?")
+    .get(race.id, playerId);
+  if (!player) return res.status(404).json({ error: "player not in race" });
+  const players = racePlayers(race.id);
+  const allReady = players.length >= 2 && players.every((p) => p.ready === 1);
+  if (!allReady) return res.status(409).json({ error: "everyone must be ready" });
+  db.prepare("UPDATE races SET status = 'countdown', starts_at = ? WHERE id = ? AND status = 'lobby'")
+    .run(now() + COUNTDOWN_MS, race.id);
   tickAndBroadcast(race.id);
   res.json(raceView(race.id, playerId));
 });
