@@ -38,9 +38,14 @@ function setOfficialToday(date) {
   writeFileSync(officialTodayPath(), JSON.stringify({ date }));
 }
 
-/** A persisted fetch date must never freeze rooms on an older day's puzzle. */
+// Only a successful fetch in this process can override the calculated calendar.
+// The publisher can already be serving its next board; a stale disk pointer
+// must never hold rooms on yesterday when the official fetch is unavailable.
+let fetchedOfficialToday = null;
 export function currentPuzzleDate() {
-  return puzzleDateAt();
+  const calendarDate = puzzleDateAt();
+  return fetchedOfficialToday && fetchedOfficialToday > calendarDate
+    ? fetchedOfficialToday : calendarDate;
 }
 
 async function get(url) {
@@ -199,6 +204,7 @@ async function fetchAndSaveOfficialPuzzles() {
   }
   if (officialToday) setOfficialToday(officialToday);
   const today = puzzles.find((p) => p.date === officialToday);
+  if (today) fetchedOfficialToday = officialToday;
   if (today) void prefetchDefinitions([...today.required, ...today.bonus]);
   return { ok: true, count: updated, officialToday };
 }

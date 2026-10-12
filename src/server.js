@@ -23,6 +23,10 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const app = express();
 app.set("trust proxy", 1);
 app.use(express.json({ limit: "64kb" }));
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
 
 // Health check for Render/Fly/Railway (no DB write, just readability).
 app.get("/healthz", (req, res) => {
@@ -283,7 +287,7 @@ function raceView(raceId, playerId) {
     }
   }
   return {
-    race: { id: race.id, roomCode: race.room_code, date: race.puzzle_date, status: race.status, startsAt: race.starts_at, endsAt: puzzleEndsAt(race.puzzle_date), expired: now() >= puzzleEndsAt(race.puzzle_date), serverNow: now() },
+    race: { id: race.id, roomCode: race.room_code, date: race.puzzle_date, currentDate: currentPuzzleDate(), status: race.status, startsAt: race.starts_at, endsAt: puzzleEndsAt(race.puzzle_date), expired: now() >= puzzleEndsAt(race.puzzle_date), serverNow: now() },
     players: players.map((p) => ({
       playerId: p.id, nickname: p.nickname, acronym: p.acronym,
       ready: p.ready === 1, finished: !!p.finishedAt, gaveUp: p.gaveUp === 1,

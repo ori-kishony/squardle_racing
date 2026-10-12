@@ -48,6 +48,7 @@ if (S.nickname) $("nickname").value = S.nickname;
 
 async function api(path, opts = {}) {
   const r = await fetch(path, {
+    cache: 'no-store',
     headers: { "content-type": "application/json" },
     ...opts,
   });
@@ -74,6 +75,20 @@ async function refreshKing() {
 }
 
 // ---------- join / lobby ----------
+function useJoinedRace(j) {
+  if (S.raceId !== j.raceId) {
+    S.grid = null; S.path = []; S.lastPath = []; S.lastFoundWord = ''; S.previewWord = '';
+    S.myWords = new Set(); S.myBonus = new Set(); S.myWordsOrdered = []; S.wordTab = 'today';
+    $('board').replaceChildren(); $('board').classList.add('blurred');
+    $('wordText').textContent = ''; $('msg').classList.add('hidden');
+    stopCountdown();
+  }
+  S.playerId = j.playerId; S.raceId = j.raceId; S.date = j.date;
+  store.set('playerId', S.playerId); store.set('raceId', S.raceId);
+  saveRoomUser(S.roomCode);
+  $('dailyPuzzleNote').classList.add('hidden');
+}
+
 $("joinBtn").onclick = async () => {
   try {
     S.roomCode = ($("roomCode").value || "KINGS").toUpperCase();
@@ -85,14 +100,7 @@ $("joinBtn").onclick = async () => {
       method: "POST",
       body: JSON.stringify({ roomCode: S.roomCode, nickname: S.nickname }),
     });
-    if (S.raceId !== j.raceId) {
-      S.grid = null; S.path = []; S.lastPath = []; S.lastFoundWord = ''; S.previewWord = '';
-      S.myWords = new Set(); S.myWordsOrdered = []; S.wordTab = 'today';
-      $('wordText').textContent = ''; $('msg').classList.add('hidden');
-    }
-    S.playerId = j.playerId; S.raceId = j.raceId; S.date = j.date;
-    store.set("playerId", S.playerId); store.set("raceId", S.raceId);
-    saveRoomUser(S.roomCode);
+    useJoinedRace(j);
     S.editingRoom = false;
     $("changeRoomBtn").classList.remove("hidden");
     connect();
@@ -129,9 +137,40 @@ $("startBtn").onclick = async () => {
   await sync();
 };
 
-async function sync() {
-  if (!S.raceId) return null;
-  const v = await api(`/api/races/${S.raceId}?playerId=${encodeURIComponent(S.playerId)}`);
+let syncInFlight;
+function sync() {
+  if (!S.raceId) return Promise.resolve(null);
+  if (!syncInFlight) {
+    syncInFlight = syncRace().finally(() => { syncInFlight = null; });
+  }
+  return syncInFlight;
+}
+
+async function syncRace() {
+  const raceId = S.raceId;
+  let v = await api(`/api/races/${raceId}?playerId=${encodeURIComponent(S.playerId)}`);
+  if (S.raceId !== raceId || S.editingRoom) return null;
+  const currentDate = v.race.currentDate || (await api('/api/today')).date;
+  if (v.race.date !== currentDate) {
+    stopCountdown();
+    show('joinView');
+    $('dailyPuzzleNote').textContent = 'Loading today’s puzzle…';
+    $('dailyPuzzleNote').classList.remove('hidden');
+    try {
+      const j = await api('/api/rooms/join', {
+        method: 'POST', body: JSON.stringify({ roomCode: S.roomCode, nickname: S.nickname }),
+      });
+      if (S.raceId !== raceId || S.editingRoom) return null;
+      useJoinedRace(j);
+      connect();
+      v = await api(`/api/races/${S.raceId}?playerId=${encodeURIComponent(S.playerId)}`);
+      void refreshKing();
+    } catch (err) {
+      $('dailyPuzzleNote').textContent = `${err.message} Retrying automatically…`;
+      throw err;
+    }
+  }
+  if (v.race.id !== S.raceId || S.editingRoom) return null;
   S.serverSkew = v.race.serverNow - Date.now();
   render(v);
   return v;
@@ -636,7 +675,9 @@ function paintRank(order) {
 
 async function loadResults(force) {
   try {
-    const r = await api(`/api/races/${S.raceId}/results?playerId=${encodeURIComponent(S.playerId)}`);
+    const raceId = S.raceId;
+    const r = await api(`/api/races/${raceId}/results?playerId=${encodeURIComponent(S.playerId)}`);
+    if (raceId !== S.raceId || S.editingRoom) return;
     show("resultsView");
     $("timeUpNote").classList.toggle("hidden", !r.expired);
     $("todayRaceBtn").classList.toggle("hidden", !r.expired);
@@ -678,6 +719,7 @@ function connect() {
   ws.onopen = () => { $("connDot").classList.add("on"); $("connText").textContent = "live"; };
   ws.onclose = () => { $("connDot").classList.remove("on"); $("connText").textContent = "reconnecting…"; };
   ws.onmessage = (ev) => {
+    if (S.ws !== ws) return;
     try {
       const m = JSON.parse(ev.data);
       S.serverSkew = m.serverNow - Date.now();
@@ -733,24 +775,6 @@ if (initialRoomUser) {
 }
 (async function resume() {
   if (!S.playerId || !S.raceId) return;
-  try {
-    // A stored race from a previous day stays pinned to its old puzzle.
-    // Re-route to today's race when the dates no longer match.
-    const [t, v] = await Promise.all([
-      api("/api/today"),
-      api(`/api/races/${S.raceId}?playerId=${encodeURIComponent(S.playerId)}`),
-    ]);
-    if (v.race.date !== t.date) {
-      const j = await api("/api/rooms/join", {
-        method: "POST",
-        body: JSON.stringify({ roomCode: S.roomCode, nickname: S.nickname }),
-      });
-      S.playerId = j.playerId; S.raceId = j.raceId; S.date = j.date;
-      store.set("playerId", S.playerId); store.set("raceId", S.raceId);
-      saveRoomUser(S.roomCode);
-    }
-    saveRoomUser(S.roomCode);
-  } catch { /* stored session invalid: user joins fresh via the form */ }
   connect();
   $("changeRoomBtn").classList.remove("hidden");
   await sync().catch(() => {});
