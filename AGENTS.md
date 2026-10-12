@@ -21,7 +21,7 @@ Vanilla Node 24 (ESM) + Express + `ws` + built-in `node:sqlite`. No framework, n
 
 ## Rules that burned us before
 
-1. **Daily rollover**: derive today from the 03:00 Pacific calendar, expire unfinished races at the next rollover, and never select today from a stale persisted fetch date. Per-player `started_at` clocks survive reconnects; new live/done joiners start their own clock.
+1. **Daily rollover**: use the later of the 03:00 Pacific calendar and a successfully fetched official today date in this process; never select today from a stale persisted fetch date. Expire unfinished races at the next calendar rollover; clients compare race `currentDate` on every sync so open tabs move to the published board too. Per-player `started_at` clocks survive reconnects; new live/done joiners start their own clock.
 2. **Race date pinning**: races lock `puzzle_date` at creation. Boot must `refreshOfficialPuzzles()` (blocking) before `listen`; clients must reroute stale stored `raceId`s (see resume in `app.js`).
 3. **Broadcast on every mutation** (`tickAndBroadcast`): joins/ready-toggles rarely change status but all sockets need refresh. WS snapshot on connect required.
 4. **No count leaks**: `/rank` and WS omit word counts while live (acronyms only); `/results` 403s until requester finishes or race done.

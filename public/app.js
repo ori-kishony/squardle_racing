@@ -42,6 +42,7 @@ const S = {
   myAccuracy: 1,
   invalidGuesses: 0,
   editingRoom: false,
+  loadingToday: false,
 };
 $("roomCode").value = S.roomCode;
 if (S.nickname) $("nickname").value = S.nickname;
@@ -86,6 +87,7 @@ function useJoinedRace(j) {
   S.playerId = j.playerId; S.raceId = j.raceId; S.date = j.date;
   store.set('playerId', S.playerId); store.set('raceId', S.raceId);
   saveRoomUser(S.roomCode);
+  S.loadingToday = false;
   $('dailyPuzzleNote').classList.add('hidden');
 }
 
@@ -152,6 +154,7 @@ async function syncRace() {
   if (S.raceId !== raceId || S.editingRoom) return null;
   const currentDate = v.race.currentDate || (await api('/api/today')).date;
   if (v.race.date !== currentDate) {
+    S.loadingToday = true;
     stopCountdown();
     show('joinView');
     $('dailyPuzzleNote').textContent = 'Loading today’s puzzle…';
@@ -677,7 +680,7 @@ async function loadResults(force) {
   try {
     const raceId = S.raceId;
     const r = await api(`/api/races/${raceId}/results?playerId=${encodeURIComponent(S.playerId)}`);
-    if (raceId !== S.raceId || S.editingRoom) return;
+    if (raceId !== S.raceId || S.editingRoom || S.loadingToday) return;
     show("resultsView");
     $("timeUpNote").classList.toggle("hidden", !r.expired);
     $("todayRaceBtn").classList.toggle("hidden", !r.expired);
@@ -719,7 +722,7 @@ function connect() {
   ws.onopen = () => { $("connDot").classList.add("on"); $("connText").textContent = "live"; };
   ws.onclose = () => { $("connDot").classList.remove("on"); $("connText").textContent = "reconnecting…"; };
   ws.onmessage = (ev) => {
-    if (S.ws !== ws) return;
+    if (S.ws !== ws || S.loadingToday) return;
     try {
       const m = JSON.parse(ev.data);
       S.serverSkew = m.serverNow - Date.now();

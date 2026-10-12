@@ -41,6 +41,8 @@ test('real API: stale calendar, daily timeout, individual clocks and results', a
     db.exec("PRAGMA busy_timeout = 5000");
     const racePath = `/api/races/${a.raceId}`;
     const view = p => request(`${racePath}?playerId=${p.playerId}`);
+    assert.equal((await view(a)).race.currentDate, puzzleDateAt());
+    assert.equal((await fetch(base + '/api/today')).headers.get('cache-control'), 'no-store');
     await request(`${racePath}/start`, {playerId:a.playerId}, 409);
     for (const p of [a,b]) await request(`${racePath}/ready`, {playerId:p.playerId, ready:true});
     assert.equal((await view(a)).race.status, 'lobby');
@@ -85,6 +87,7 @@ test('real API: stale calendar, daily timeout, individual clocks and results', a
     const expired = await view(a);
     assert.equal(expired.race.status,'done');
     assert.equal(expired.race.expired,true);
+    assert.equal(expired.race.currentDate, a.date);
     assert.equal(db.prepare('SELECT stopped_at FROM race_players WHERE player_id = ?').get(a.playerId).stopped_at,puzzleEndsAt(yesterday));
     await request(`${racePath}/words`, {playerId:a.playerId,word:'THE'}, 409);
     const oldResults = await request(`${racePath}/results?playerId=${a.playerId}`);
