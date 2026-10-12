@@ -4,14 +4,15 @@
 // `/api/today-puzzle-config.js` (referenced from `/?level=xp`). Word lists
 // are obfuscated with a char-substitution + base64; the substitution alphabet
 // and rotation are extracted live from the bundled closure-*.js so this
-// keeps working across redeploys. `gTodayDateStr` from the config is the
-// authority for "which puzzle is today's".
+// keeps working across redeploys. The daily calendar uses the official
+// 03:00 Pacific rollover; cached config dates cannot freeze today's rooms.
 import { db } from "./db.js";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findPath } from "./words.js";
 import { prefetchDefinitions } from "./definitions.js";
+import { puzzleDateAt } from "./calendar.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const UA = { "User-Agent": "squardle-racing (friends-group, few req/day)" };
@@ -37,15 +38,13 @@ function setOfficialToday(date) {
   writeFileSync(officialTodayPath(), JSON.stringify({ date }));
 }
 
-/** Which puzzle date should new races use? Official calendar wins when known. */
+/** A persisted fetch date must never freeze rooms on an older day's puzzle. */
 export function currentPuzzleDate() {
-  const official = getOfficialToday();
-  if (official && getPuzzle(official)) return official;
-  return todayDateUTC();
+  return puzzleDateAt();
 }
 
 async function get(url) {
-  const res = await fetch(url, { headers: UA });
+  const res = await fetch(url, { headers: { ...UA, "Cache-Control": "no-cache" }, signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   return res.text();
 }
@@ -54,16 +53,14 @@ async function extractDecoderClosures(html) {
   const m = html.match(/<script[^>]+src="([^"]*closure-[^"]*\.js)"/);
   if (!m) throw new Error("closure bundle not found in HTML");
   const js = await get(new URL(m[1], "https://squaredle.app/").toString());
-  // Substitution: g=function(r){var p=e.indexOf(r);return-1==p?r:e[(p-N+e.length)%e.length]}
-  const fn = js.match(
-    /(\w+)=function\(\w+\)\{var \w+=(\w+)\.indexOf\(\w+\);return-1==\w+\?\w+:\2\[\(p-(\d+)\+\2\.length\)%\2\.length\]\}/
-  );
-  // Fallback to the looser shape if closure renames locals.
-  const loose =
-    fn ||
-    js.match(/indexOf\(\w+\);return-1==\w+\?\w+:\w+\[\(p-(\d+)\+\w+\.length\)%\w+\.length\]\}/);
-  if (!loose) throw new Error("decoder function not found in bundle");
-  const rot = parseInt(loose[3] ?? loose[1], 10);
+  return decoderFromBundle(js);
+}
+
+export function decoderFromBundle(js) {
+  // Capture identifiers: Closure renamed the index variable from p to n.
+  const fn = js.match(/(\w+)=function\((\w+)\)\{var (\w+)=(\w+)\.indexOf\(\2\);return-1==\3\?\2:\4\[\(\3-(\d+)\+\4\.length\)%\4\.length\]\}/);
+  if (!fn) throw new Error("decoder function not found in bundle");
+  const rot = Number(fn[5]);
   const alphas = [...js.matchAll(/"([A-Za-z0-9]{60,70})"/g)].map((x) => x[1]);
   // The alphabet is the 62-char base64-ish custom set; pick the one that decodes.
   return { js, rot, alphas };
@@ -179,6 +176,7 @@ export function getPuzzle(date) {
 
 export function ensurePuzzleFor(date) {
   if (getPuzzle(date)) return getPuzzle(date);
+  if (!process.env.NO_FETCH) throw new Error(`Official puzzle for ${date} is not available yet. Please retry shortly.`);
   // Offline fallback so the app is playable before the first successful scrape.
   const seed = {
     date,
@@ -192,7 +190,7 @@ export function ensurePuzzleFor(date) {
 }
 
 /** Fetch official puzzles and store them. Returns {ok, officialToday?, error?}. */
-export async function refreshOfficialPuzzles() {
+async function fetchAndSaveOfficialPuzzles() {
   const { puzzles, officialToday } = await fetchOfficialExpress();
   let updated = 0;
   for (const p of puzzles) {
@@ -203,6 +201,14 @@ export async function refreshOfficialPuzzles() {
   const today = puzzles.find((p) => p.date === officialToday);
   if (today) void prefetchDefinitions([...today.required, ...today.bonus]);
   return { ok: true, count: updated, officialToday };
+}
+
+let refreshInFlight;
+export function refreshOfficialPuzzles() {
+  if (!refreshInFlight) {
+    refreshInFlight = fetchAndSaveOfficialPuzzles().finally(() => { refreshInFlight = null; });
+  }
+  return refreshInFlight;
 }
 
 // CLI: `npm run fetch`
@@ -216,6 +222,6 @@ if (process.argv[1]?.endsWith("ingest.js")) {
     }
   } catch (err) {
     console.log(`auto-fetch failed (${err.message}); keeping existing puzzles`);
-    ensurePuzzleFor(currentPuzzleDate());
+    process.exitCode = 1;
   }
 }

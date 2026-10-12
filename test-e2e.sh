@@ -2,7 +2,7 @@
 # End-to-end smoke test: join 2 players, ready, countdown->live, play to 100%, king+results.
 set -u
 B=http://localhost:3759
-export PORT=3759 DB_PATH=/tmp/e2e.sqlite3 NO_FETCH=1
+export PORT=3759 DB_PATH=/tmp/e2e.sqlite3 NO_FETCH=1 OFFICIAL_TODAY_PATH=/tmp/e2e-official-today.json
 rm -f /tmp/e2e.sqlite3*
 setsid node src/server.js </dev/null >/tmp/e2e-server.log 2>&1 &
 SRV=$!
@@ -28,9 +28,10 @@ S1=$(curl -s -m 5 "$B/api/races/$RACE?playerId=$AID" | python3 -c "import sys,js
 echo "ok: waits for all (still lobby after 1 ready)"
 
 curl -s -m 5 -X POST $B/api/races/$RACE/ready -H 'content-type: application/json' -d "{\"playerId\":\"$BID\",\"ready\":true}" > /dev/null
+curl -s -m 5 -X POST $B/api/races/$RACE/start -H 'content-type: application/json' -d "{\"playerId\":\"$AID\"}" > /dev/null
 S2=$(curl -s -m 5 "$B/api/races/$RACE?playerId=$AID" | python3 -c "import sys,json;print(json.load(sys.stdin)['race']['status'])")
 [ "$S2" = "countdown" ] || fail "expected countdown, got $S2"
-echo "ok: countdown starts when all ready"
+echo "ok: countdown starts after pressing Start"
 
 sleep 6
 V=$(curl -s -m 5 "$B/api/races/$RACE?playerId=$AID")

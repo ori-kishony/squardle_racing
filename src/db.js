@@ -10,6 +10,7 @@ mkdirSync(dirname(dbPath), { recursive: true });
 
 export const db = new DatabaseSync(dbPath);
 db.exec("PRAGMA journal_mode = WAL");
+db.exec("PRAGMA busy_timeout = 5000");
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS puzzles (
@@ -78,6 +79,14 @@ try {
 } catch {
   /* column already exists */
 }
+
+// Keep existing players' original clock when upgrading an older database.
+for (const column of ['started_at', 'stopped_at']) {
+  if (!db.prepare('PRAGMA table_info(race_players)').all().some(c => c.name === column))
+    db.exec(`ALTER TABLE race_players ADD COLUMN ${column} INTEGER`);
+}
+db.exec(`UPDATE race_players SET started_at = (SELECT starts_at FROM races WHERE id = race_id)
+  WHERE started_at IS NULL AND (SELECT status FROM races WHERE id = race_id) IN ('live','done')`);
 
 export function acronymFor(nickname) {
   const parts = nickname.trim().split(/[\s._-]+/).filter(Boolean);

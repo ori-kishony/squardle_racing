@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 // - countdown needs ALL joined players ready, min 2
 // - late join during countdown drops back to lobby
 // - finish = 100% of required words, bonus excluded
-// - no timeout: race stays live until everyone finished/gave up
+// - unfinished races expire at the next daily puzzle rollover
 function allReady(players) {
   return players.length >= 2 && players.every((p) => p.ready);
 }

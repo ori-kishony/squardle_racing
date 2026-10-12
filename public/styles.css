@@ -63,7 +63,7 @@ button.danger { background:#f7e3e3; color:#a33; }
 #dragSvg circle { fill:var(--acc); opacity:.95; }
 #board.blurred .cell { filter:blur(12px); pointer-events:none; }
 .cell { position:relative; min-width:0; min-height:0; margin:0; padding:0; font-family:inherit; font-size:inherit; font-weight:400; border-radius:calc(2 * var(--unit)); border:1px solid grey; background:var(--tile); color:var(--ink); box-shadow:none; touch-action:none; display:flex; align-items:center; justify-content:center; transition:background-color .1s ease-in .3s, color .1s ease-in .3s, box-shadow .3s ease-in .3s, border-width .3s ease-in .3s, opacity .4s; }
-.cell .letter { pointer-events:none; line-height:1; font-family:inherit; font-weight:inherit; font-size:min(1em,10vw); }
+.cell .letter { pointer-events:none; line-height:1; font-family:inherit; font-weight:inherit; font-size:calc(4 / 3 * 1em); }
 .cell.sel { background:var(--bg); color:var(--acc); border-width:.08em; box-shadow:calc(-1 * var(--unit)) var(--unit) calc(1.2 * var(--unit)) var(--acc-half); transition:background-color .1s ease-in-out, color .1s ease-in-out, box-shadow .1s ease-out, border-width .1s ease-in-out; }
 .cell.faded { opacity:.28; }
 .cell.pop { animation:pop .45s ease-in-out; }

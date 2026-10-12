@@ -75,23 +75,30 @@ async function refreshKing() {
 
 // ---------- join / lobby ----------
 $("joinBtn").onclick = async () => {
-  S.roomCode = ($("roomCode").value || "KINGS").toUpperCase();
-  S.nickname = $("nickname").value.trim();
-  if (!S.nickname) return alert("Pick a nickname");
-  store.set("roomCode", S.roomCode);
-  store.set("nickname", S.nickname);
-  const j = await api("/api/rooms/join", {
-    method: "POST",
-    body: JSON.stringify({ roomCode: S.roomCode, nickname: S.nickname }),
-  });
-  S.playerId = j.playerId; S.raceId = j.raceId; S.date = j.date;
-  store.set("playerId", S.playerId); store.set("raceId", S.raceId);
-  saveRoomUser(S.roomCode);
-  S.editingRoom = false;
-  $("changeRoomBtn").classList.remove("hidden");
-  connect();
-  await sync();
-  await refreshKing();
+  try {
+    S.roomCode = ($("roomCode").value || "KINGS").toUpperCase();
+    S.nickname = $("nickname").value.trim();
+    if (!S.nickname) return alert("Pick a nickname");
+    store.set("roomCode", S.roomCode);
+    store.set("nickname", S.nickname);
+    const j = await api("/api/rooms/join", {
+      method: "POST",
+      body: JSON.stringify({ roomCode: S.roomCode, nickname: S.nickname }),
+    });
+    if (S.raceId !== j.raceId) {
+      S.grid = null; S.path = []; S.lastPath = []; S.lastFoundWord = ''; S.previewWord = '';
+      S.myWords = new Set(); S.myWordsOrdered = []; S.wordTab = 'today';
+      $('wordText').textContent = ''; $('msg').classList.add('hidden');
+    }
+    S.playerId = j.playerId; S.raceId = j.raceId; S.date = j.date;
+    store.set("playerId", S.playerId); store.set("raceId", S.raceId);
+    saveRoomUser(S.roomCode);
+    S.editingRoom = false;
+    $("changeRoomBtn").classList.remove("hidden");
+    connect();
+    await sync();
+    await refreshKing();
+  } catch (err) { alert(err.message); }
 };
 
 $("roomCode").addEventListener("input", () => {
@@ -631,8 +638,10 @@ async function loadResults(force) {
   try {
     const r = await api(`/api/races/${S.raceId}/results?playerId=${encodeURIComponent(S.playerId)}`);
     show("resultsView");
+    $("timeUpNote").classList.toggle("hidden", !r.expired);
+    $("todayRaceBtn").classList.toggle("hidden", !r.expired);
     $("standings").innerHTML = r.standings
-      .map((s) => `<li><button class="linklike" data-acronym="${escapeHtml(s.acronym)}"><b>${s.rank}. ${s.acronym}</b></button> ${escapeHtml(s.nickname)} — ${s.count}/${s.requiredTotal} +${s.bonus || 0} bonus · 🎯 ${fmtAcc(s.accuracy)} · 👑 ${s.wins} wins${s.finishedMs != null ? ` in ${fmtMs(s.finishedMs)}` : s.gaveUp ? " (gave up)" : " (racing…)"}</li>`)
+      .map((s) => `<li><button class="linklike" data-acronym="${escapeHtml(s.acronym)}"><b>${s.rank}. ${s.acronym}</b></button> ${escapeHtml(s.nickname)} — ${s.count}/${s.requiredTotal} +${s.bonus || 0} bonus · 🎯 ${fmtAcc(s.accuracy)} · 👑 ${s.wins} wins${s.finishedMs != null ? ` in ${fmtMs(s.finishedMs)}` : s.gaveUp ? " (gave up)" : s.timedOut ? " (time’s up)" : " (racing…)"}</li>`)
       .join("");
     $("hardest").innerHTML = r.hardest
       .map((h) => `<li><button class="wordChip" data-word="${h.word}">${h.word}</button> — avg ${fmtMs(h.avgMs)}${h.firstBy ? `, first: ${h.firstBy}` : ""}</li>`)
@@ -645,6 +654,7 @@ async function loadResults(force) {
     // keep live board reachable: re-show race link
   } catch { /* not unlocked yet */ }
 }
+$("todayRaceBtn").onclick = () => $("joinBtn").onclick();
 $("copyBtn").onclick = async () => {
   await navigator.clipboard.writeText($("shareCard").textContent).catch(() => {});
   $("copyBtn").textContent = "Copied!";

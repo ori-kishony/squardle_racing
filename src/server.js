@@ -15,6 +15,8 @@ import {
   savePuzzle,
 } from "./ingest.js";
 
+import { puzzleEndsAt } from "./calendar.js";
+
 const COUNTDOWN_MS = 5000;
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -38,7 +40,7 @@ const getRace = (id) => db.prepare("SELECT * FROM races WHERE id = ?").get(id);
 const racePlayers = (raceId) =>
   db
     .prepare(
-      `SELECT p.id, p.nickname, p.acronym, rp.ready, rp.finished_at AS finishedAt, rp.gave_up AS gaveUp,
+      `SELECT p.id, p.nickname, p.acronym, rp.ready, rp.finished_at AS finishedAt, rp.gave_up AS gaveUp, rp.started_at AS startedAt, rp.stopped_at AS stoppedAt,
         COALESCE(rp.invalid_guesses, 0) AS invalidGuesses
        FROM race_players rp JOIN players p ON p.id = rp.player_id WHERE rp.race_id = ?`
     )
@@ -73,7 +75,7 @@ function rankOrder(race) {
   });
   const finished = stats
     .filter((p) => p.finishedAt)
-    .sort((a, b) => a.finishedAt - b.finishedAt);
+    .sort((a, b) => (a.finishedAt - a.startedAt) - (b.finishedAt - b.startedAt) || a.finishedAt - b.finishedAt);
   const unfinished = stats
     .filter((p) => !p.finishedAt)
     .sort((a, b) => b.count - a.count || a.lastAt - b.lastAt);
@@ -83,7 +85,18 @@ function rankOrder(race) {
 /** State machine. Returns true if status changed. */
 function tickRace(race) {
   const t = now();
+  const endsAt = puzzleEndsAt(race.puzzle_date);
+  if (t >= endsAt) {
+    db.prepare("UPDATE race_players SET stopped_at = ? WHERE race_id = ? AND finished_at IS NULL AND stopped_at IS NULL")
+      .run(endsAt, race.id);
+    if (race.status !== 'done') {
+      db.prepare("UPDATE races SET status = 'done' WHERE id = ?").run(race.id);
+      return true;
+    }
+    return false;
+  }
   if (race.status === "countdown" && race.starts_at && t >= race.starts_at) {
+    db.prepare("UPDATE race_players SET started_at = ? WHERE race_id = ? AND started_at IS NULL").run(race.starts_at, race.id);
     db.prepare("UPDATE races SET status = 'live' WHERE id = ?").run(race.id);
     return true;
   }
@@ -138,6 +151,25 @@ function getOrCreateRace(roomCode, date) {
   return getRace(race.id);
 }
 
+// Resolve the current date before serving it, including right after rollover.
+let lastPuzzleRetry = 0;
+app.use(['/api/today', '/api/rooms/join'], async (req, res, next) => {
+  if (!process.env.NO_FETCH) {
+    const puzzle = getPuzzle(currentPuzzleDate());
+    if (!puzzle || puzzle.source === 'seed-sample') {
+      if (now() - lastPuzzleRetry >= 30000) {
+        lastPuzzleRetry = now();
+        try { await refreshOfficialPuzzles(); }
+        catch (err) { console.warn('daily puzzle refresh failed:', err.message); }
+      }
+      const fresh = getPuzzle(currentPuzzleDate());
+      if (!fresh || fresh.source === 'seed-sample')
+        return res.status(503).json({ error: 'Today’s official puzzle is still loading. Please retry shortly.' });
+    }
+  }
+  next();
+});
+
 // ---------- API ----------
 app.get("/api/today", (req, res) => {
   const date = currentPuzzleDate();
@@ -160,8 +192,13 @@ app.post("/api/rooms/join", (req, res) => {
   }
   const date = currentPuzzleDate();
   const race = getOrCreateRace(roomCode, date);
-  db.prepare("INSERT INTO race_players (race_id, player_id, ready) VALUES (?, ?, 0) ON CONFLICT DO NOTHING")
-    .run(race.id, player.id);
+  tickRace(race);
+  const current = getRace(race.id);
+  const startedAt = ['live', 'done'].includes(current.status) ? now() : null;
+  const inserted = db.prepare("INSERT INTO race_players (race_id, player_id, ready, started_at) VALUES (?, ?, 0, ?) ON CONFLICT DO NOTHING")
+    .run(race.id, player.id, startedAt);
+  if (inserted.changes && current.status === 'done' && now() < puzzleEndsAt(date))
+    db.prepare("UPDATE races SET status = 'live' WHERE id = ?").run(race.id);
   tickAndBroadcast(race.id);
   res.json({ roomCode, playerId: player.id, token: player.token, raceId: race.id, date });
 });
@@ -177,7 +214,7 @@ function raceView(raceId, playerId) {
   const myWords = playerId
     ? db.prepare("SELECT word, found_at AS foundAt, is_bonus AS isBonus FROM finds WHERE race_id = ? AND player_id = ? ORDER BY found_at").all(raceId, playerId)
     : [];
-  const meFinished = !!me?.finishedAt;
+  const meFinished = !!me?.finishedAt || me?.gaveUp === 1;
   const reveal = race.status === "done" || meFinished;
   // Grid stays secret until GO (or for finished viewers).
   const grid = race.status === "live" || reveal ? puzzle.grid : null;
@@ -246,7 +283,7 @@ function raceView(raceId, playerId) {
     }
   }
   return {
-    race: { id: race.id, roomCode: race.room_code, date: race.puzzle_date, status: race.status, startsAt: race.starts_at, serverNow: now() },
+    race: { id: race.id, roomCode: race.room_code, date: race.puzzle_date, status: race.status, startsAt: race.starts_at, endsAt: puzzleEndsAt(race.puzzle_date), expired: now() >= puzzleEndsAt(race.puzzle_date), serverNow: now() },
     players: players.map((p) => ({
       playerId: p.id, nickname: p.nickname, acronym: p.acronym,
       ready: p.ready === 1, finished: !!p.finishedAt, gaveUp: p.gaveUp === 1,
@@ -264,6 +301,7 @@ function raceView(raceId, playerId) {
     invalidGuesses,
     hints,
     faded,
+    myStartedAt: me?.startedAt ?? null,
     myFinished: meFinished,
     myReady: me?.ready === 1,
   };
@@ -276,8 +314,10 @@ app.get("/api/races/:id", (req, res) => {
 });
 
 app.post("/api/races/:id/ready", (req, res) => {
-  const race = getRace(req.params.id);
+  let race = getRace(req.params.id);
   if (!race) return res.status(404).json({ error: "race not found" });
+  tickRace(race);
+  race = getRace(race.id);
   if (race.status === "live" || race.status === "done")
     return res.status(409).json({ error: "race already started" });
   const { playerId, ready } = req.body || {};
@@ -290,8 +330,10 @@ app.post("/api/races/:id/ready", (req, res) => {
 });
 
 app.post("/api/races/:id/start", (req, res) => {
-  const race = getRace(req.params.id);
+  let race = getRace(req.params.id);
   if (!race) return res.status(404).json({ error: "race not found" });
+  tickRace(race);
+  race = getRace(race.id);
   if (race.status !== "lobby")
     return res.status(409).json({ error: "race has already started" });
   const { playerId } = req.body || {};
@@ -346,12 +388,10 @@ app.post("/api/races/:id/words", (req, res) => {
   if (doneCount >= reqSet.size) {
     db.prepare("UPDATE race_players SET finished_at = ? WHERE race_id = ? AND player_id = ?").run(t, race.id, playerId);
     finished = true;
-    // Crown king: first finisher of this race.
-    const existing = db.prepare("SELECT * FROM king_history WHERE room_code = ? AND race_id = ?").get(race.room_code, race.id);
-    if (!existing) {
-      db.prepare("INSERT INTO king_history (room_code, player_id, race_id, won_at) VALUES (?, ?, ?, ?)")
-        .run(race.room_code, playerId, race.id, t);
-    }
+    const winner = rankOrder(race).find(p => p.finishedAt);
+    db.prepare(`INSERT INTO king_history (room_code, player_id, race_id, won_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(room_code, race_id) DO UPDATE SET player_id = excluded.player_id`)
+      .run(race.room_code, winner.id, race.id, t);
   }
   tickAndBroadcast(race.id);
   const invRow = db.prepare("SELECT invalid_guesses AS inv FROM race_players WHERE race_id = ? AND player_id = ?").get(race.id, playerId);
@@ -363,7 +403,7 @@ app.post("/api/races/:id/giveup", (req, res) => {
   const race = getRace(req.params.id);
   if (!race) return res.status(404).json({ error: "race not found" });
   const { playerId } = req.body || {};
-  db.prepare("UPDATE race_players SET gave_up = 1 WHERE race_id = ? AND player_id = ?").run(race.id, playerId);
+  db.prepare("UPDATE race_players SET gave_up = 1, stopped_at = COALESCE(stopped_at, ?) WHERE race_id = ? AND player_id = ?").run(now(), race.id, playerId);
   tickAndBroadcast(race.id);
   res.json(raceView(race.id, playerId));
 });
@@ -377,7 +417,7 @@ app.get("/api/races/:id/rank", (req, res) => {
   const order = rankOrder(race);
   const playerId = String(req.query.playerId || "");
   const me = racePlayers(race.id).find((p) => p.id === playerId);
-  const reveal = race.status === "done" || !!me?.finishedAt;
+  const reveal = race.status === "done" || !!me?.finishedAt || me?.gaveUp === 1;
   res.json({
     status: race.status,
     order: order.map((p) => ({
@@ -395,7 +435,7 @@ app.get("/api/races/:id/results", (req, res) => {
   race = getRace(req.params.id);
   const playerId = String(req.query.playerId || "");
   const me = racePlayers(race.id).find((p) => p.id === playerId);
-  if (race.status !== "done" && !me?.finishedAt)
+  if (race.status !== "done" && !me?.finishedAt && !me?.gaveUp)
     return res.status(403).json({ error: "results unlock when you finish or the race ends" });
   const puzzle = getPuzzle(race.puzzle_date);
   const order = rankOrder(race);
@@ -410,12 +450,12 @@ app.get("/api/races/:id/results", (req, res) => {
   const snapshotMs = now();
   const wordStats = puzzle.required.map((word) => {
     const rows = db.prepare("SELECT player_id AS pid, found_at AS t FROM finds WHERE race_id = ? AND word = ? ORDER BY found_at").all(race.id, word);
-    const foundTimes = new Map(rows.map((r) => [r.pid, r.t - startMs]));
+    const foundTimes = new Map(rows.map((r) => [r.pid, Math.max(0, r.t - (playersById.get(r.pid)?.startedAt ?? startMs))]));
     const playerCount = players.length || 1;
     const totalMs = players.reduce((sum, p) => {
       if (foundTimes.has(p.id)) return sum + foundTimes.get(p.id);
-      const stopAt = p.finishedAt || snapshotMs;
-      return sum + Math.max(0, stopAt - startMs);
+      const stopAt = p.finishedAt || p.stoppedAt || Math.min(snapshotMs, puzzleEndsAt(race.puzzle_date));
+      return sum + (p.startedAt == null ? 0 : Math.max(0, stopAt - p.startedAt));
     }, 0);
     return {
       word,
@@ -426,7 +466,7 @@ app.get("/api/races/:id/results", (req, res) => {
     };
   }).sort((a, b) => b.avgMs - a.avgMs);
   // Lead-change timeline from find events.
-  const events = db.prepare("SELECT player_id AS pid, found_at AS t FROM finds WHERE race_id = ? ORDER BY found_at").all(race.id);
+  const events = db.prepare("SELECT player_id AS pid, found_at AS t FROM finds WHERE race_id = ? AND is_bonus = 0 ORDER BY found_at").all(race.id).map(e => ({ ...e, t: e.t - (playersById.get(e.pid)?.startedAt ?? startMs) })).sort((a, b) => a.t - b.t);
   const counts = new Map();
   const timeline = [];
   let leader = null;
@@ -435,7 +475,7 @@ app.get("/api/races/:id/results", (req, res) => {
     const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
     if (top !== leader) {
       leader = top;
-      timeline.push({ atMs: e.t - startMs, leader: racePlayers(race.id).find((p) => p.id === leader)?.acronym });
+      timeline.push({ atMs: e.t, leader: racePlayers(race.id).find((p) => p.id === leader)?.acronym });
     }
   }
   res.json({
@@ -444,12 +484,13 @@ app.get("/api/races/:id/results", (req, res) => {
       rank: i + 1, playerId: p.id, nickname: p.nickname, acronym: p.acronym,
       count: p.count, bonus: p.bonus, accuracy: p.accuracy,
       requiredTotal: puzzle.required.length,
-      finishedMs: p.finishedAt ? p.finishedAt - startMs : null, gaveUp: p.gaveUp === 1,
+      finishedMs: p.finishedAt ? p.finishedAt - p.startedAt : null, gaveUp: p.gaveUp === 1, timedOut: !p.finishedAt && !p.gaveUp && !!p.stoppedAt,
       wins: winsByPlayer.get(p.id) || 0,
     })),
     hardest: wordStats.slice(0, Math.min(5, wordStats.length)),
     wordStats,
     leadTimeline: timeline,
+    expired: now() >= puzzleEndsAt(race.puzzle_date),
     date: race.puzzle_date,
   });
 });
@@ -548,13 +589,13 @@ async function boot() {
       console.warn("official fetch failed, using stored puzzle:", err.message);
     }
     setInterval(() => {
-      refreshOfficialPuzzles().catch(() => {});
-    }, 6 * 3600 * 1000);
+      refreshOfficialPuzzles().catch(err => console.warn("official refresh failed:", err.message));
+    }, 5 * 60 * 1000);
   }
-  ensurePuzzleFor(currentPuzzleDate());
+  if (process.env.NO_FETCH) ensurePuzzleFor(currentPuzzleDate());
   const port = Number(process.env.PORT || 3000);
   server.listen(port, "0.0.0.0", () => {
-    console.log(`squardle racing on http://localhost:${port}`);
+    console.log(`squardle racing on http://localhost:${server.address().port}`);
   });
 }
 
