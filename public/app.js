@@ -41,6 +41,9 @@ const S = {
   bonusCount: 0,
   myAccuracy: 1,
   invalidGuesses: 0,
+  incorrectWordStreak: 0,
+  lastMissTaunt: -1,
+  lastLeaderId: null,
   editingRoom: false,
   loadingToday: false,
 };
@@ -78,6 +81,8 @@ async function refreshKing() {
 // ---------- join / lobby ----------
 function useJoinedRace(j) {
   if (S.raceId !== j.raceId) {
+    S.incorrectWordStreak = 0; S.lastMissTaunt = -1;
+    S.lastLeaderId = null;
     S.grid = null; S.path = []; S.lastPath = []; S.lastFoundWord = ''; S.previewWord = '';
     S.myWords = new Set(); S.myBonus = new Set(); S.myWordsOrdered = []; S.wordTab = 'today';
     $('board').replaceChildren(); $('board').classList.add('blurred');
@@ -423,13 +428,31 @@ document.addEventListener("pointerup", endDrag);
 document.addEventListener("pointercancel", () => { dragging = false; dragPointerId = null; S.path = []; paintPath(); });
 
 let toastTimer = null;
-function toast(text, success = false) {
+function toast(text, success = false, duration = 1800) {
   const m = $("msg");
   m.textContent = text;
   m.classList.toggle("success", success);
   m.classList.remove("hidden");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => m.classList.add("hidden"), 1800);
+  toastTimer = setTimeout(() => m.classList.add("hidden"), duration);
+}
+
+const missTaunts = [
+  "Getting desperate?",
+  "Bold of you to call that a word.",
+  "The dictionary would like a word.",
+  "Have you tried using actual words?",
+  "Five misses. One very confused dictionary.",
+  "That's certainly… a collection of letters.",
+];
+
+function nextMissTaunt() {
+  // Pick randomly without repeating the previous taunt.
+  const choices = S.lastMissTaunt < 0 ? missTaunts.length : missTaunts.length - 1;
+  let index = Math.floor(Math.random() * choices);
+  if (S.lastMissTaunt >= 0 && index >= S.lastMissTaunt) index++;
+  S.lastMissTaunt = index;
+  return missTaunts[index];
 }
 
 function popCells(cells) {
@@ -458,9 +481,19 @@ async function submitWord(w, path) {
       body: JSON.stringify({ playerId: S.playerId, word: w }),
     });
     if (!r.ok) {
+      if (r.reason === "not-in-list") {
+        S.incorrectWordStreak++;
+        if (S.incorrectWordStreak % 5 === 0) {
+          toast(nextMissTaunt(), false, 3200);
+          return;
+        }
+      } else if (r.reason === "already") {
+        S.incorrectWordStreak = 0;
+      }
       toast(r.reason === "already" ? "Already found" : r.reason === "not-in-list" ? "Not in word list" : r.reason === "no-path" ? "No path on grid" : r.reason);
       return;
     }
+    S.incorrectWordStreak = 0;
     popCells(path);
     S.lastFoundWord = r.word;
     paintPath();
@@ -671,9 +704,22 @@ $("giveUpBtn").onclick = async () => {
 
 // ---------- live rank (acronyms only) + results ----------
 function paintRank(order) {
+  const leaderId = order[0]?.playerId || null;
+  const tookLead = S.lastLeaderId !== null && leaderId !== null && leaderId !== S.lastLeaderId;
+  const previousCrown = $("liveRank").querySelector(".leaderCrown");
   $("liveRank").innerHTML = order
-    .map((p, i) => `<span class="chip ${i === 0 ? "lead" : ""} ${p.finished ? "done" : ""}">${i + 1}. ${escapeHtml(p.acronym)}${p.finished ? " 🏁" : ""}</span>`)
+    .map((p, i) => `<span class="chip ${i === 0 ? "lead" : ""} ${p.finished ? "done" : ""}">${i === 0 ? '<span class="leaderCrown" aria-hidden="true">👑</span> ' : ''}${i + 1}. ${escapeHtml(p.acronym)}${p.finished ? " 🏁" : ""}</span>`)
     .join('<span>›</span>');
+  let crown = $("liveRank").querySelector(".leaderCrown");
+  if (crown && previousCrown && leaderId === S.lastLeaderId) {
+    crown.replaceWith(previousCrown);
+    crown = previousCrown;
+  }
+  if (crown && tookLead) {
+    crown.classList.add("wobble");
+    crown.addEventListener("animationend", () => crown.classList.remove("wobble"), { once: true });
+  }
+  S.lastLeaderId = leaderId;
 }
 
 async function loadResults(force) {
@@ -691,6 +737,7 @@ async function loadResults(force) {
       .map((h) => `<li><button class="wordChip" data-word="${h.word}">${h.word}</button> — avg ${fmtMs(h.avgMs)}${h.firstBy ? `, first: ${h.firstBy}` : ""}</li>`)
       .join("");
     const me = r.standings.find((s) => s.playerId === S.playerId);
+    $("perfectAccuracyNote").classList.toggle("hidden", !(me?.finishedMs != null && me.accuracy === 1));
     const won = me && me.rank === 1 && me.finishedMs != null;
     $("shareCard").textContent = won
       ? `👑 I have been crowned King of Squaredle Express ${r.date} in ${fmtMs(me.finishedMs)}! Dethrone me: ${location.origin}?room=${S.roomCode}`

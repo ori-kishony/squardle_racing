@@ -41,6 +41,18 @@ button.danger { background:#f7e3e3; color:#a33; }
 .chip { background:var(--chip); border-radius:8px; padding:6px 10px; font-weight:700; }
 .chip.lead { background:var(--acc); color:#fff; }
 .chip.done { outline:2px solid var(--good); }
+.leaderCrown { display:inline-block; transform-origin:50% 85%; }
+.leaderCrown.wobble { animation:crownWobble 600ms ease-in-out; }
+@keyframes crownWobble {
+  0%, 100% { transform:rotate(0); }
+  20% { transform:rotate(-14deg); }
+  40% { transform:rotate(12deg); }
+  60% { transform:rotate(-8deg); }
+  80% { transform:rotate(4deg); }
+}
+@media (prefers-reduced-motion:reduce) {
+  .leaderCrown.wobble { animation:none; }
+}
 
 /* progress count + hint unlock milestones */
 #progressWrap { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px 12px; margin:8px 0; }
@@ -63,7 +75,8 @@ button.danger { background:#f7e3e3; color:#a33; }
 #dragSvg circle { fill:var(--acc); opacity:.95; }
 #board.blurred .cell { filter:blur(12px); pointer-events:none; }
 .cell { position:relative; min-width:0; min-height:0; margin:0; padding:0; font-family:inherit; font-size:inherit; font-weight:400; border-radius:calc(2 * var(--unit)); border:1px solid grey; background:var(--tile); color:var(--ink); box-shadow:none; touch-action:none; display:flex; align-items:center; justify-content:center; transition:background-color .1s ease-in .3s, color .1s ease-in .3s, box-shadow .3s ease-in .3s, border-width .3s ease-in .3s, opacity .4s; }
-.cell .letter { pointer-events:none; line-height:1; font-family:inherit; font-weight:inherit; font-size:calc(4 / 3 * 1em); }
+/* Squaredle's bold 3×3 letters scale by 4/3 and are capped at 10vw. */
+.cell .letter { pointer-events:none; line-height:1; font-family:inherit; font-weight:700; font-size:min(calc(4 / 3 * 1em),10vw); }
 .cell.sel { background:var(--bg); color:var(--acc); border-width:.08em; box-shadow:calc(-1 * var(--unit)) var(--unit) calc(1.2 * var(--unit)) var(--acc-half); transition:background-color .1s ease-in-out, color .1s ease-in-out, box-shadow .1s ease-out, border-width .1s ease-in-out; }
 .cell.faded { opacity:.28; }
 .cell.pop { animation:pop .45s ease-in-out; }
