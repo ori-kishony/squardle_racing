@@ -569,7 +569,7 @@ const socketsByRace = new Map();
 function snapshot(raceId) {
   const race = getRace(raceId);
   if (!race) return null;
-  const order = rankOrder(race).map((p) => ({ playerId: p.id, acronym: p.acronym }));
+  const order = rankOrder(race).map((p) => ({ playerId: p.id, acronym: p.acronym, nickname: p.nickname }));
   return JSON.stringify({ type: "race", status: race.status, startsAt: race.starts_at, serverNow: now(), order });
 }
 function broadcast(raceId) {

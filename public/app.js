@@ -702,13 +702,13 @@ $("giveUpBtn").onclick = async () => {
   await sync();
 };
 
-// ---------- live rank (acronyms only) + results ----------
+// ---------- live rank (first two letters) + results ----------
 function paintRank(order) {
   const leaderId = order[0]?.playerId || null;
   const tookLead = S.lastLeaderId !== null && leaderId !== null && leaderId !== S.lastLeaderId;
   const previousCrown = $("liveRank").querySelector(".leaderCrown");
   $("liveRank").innerHTML = order
-    .map((p, i) => `<span class="chip ${i === 0 ? "lead" : ""} ${p.finished ? "done" : ""}">${i === 0 ? '<span class="leaderCrown" aria-hidden="true">👑</span> ' : ''}${i + 1}. ${escapeHtml(p.acronym)}${p.finished ? " 🏁" : ""}</span>`)
+    .map((p, i) => `<span class="chip ${i === 0 ? "lead" : ""} ${p.finished ? "done" : ""}">${i === 0 ? '<span class="leaderCrown" aria-hidden="true">👑</span> ' : ''}${escapeHtml(Array.from(p.nickname || "").slice(0, 2).join("").toUpperCase())}${p.finished ? " 🏁" : ""}</span>`)
     .join('<span>›</span>');
   let crown = $("liveRank").querySelector(".leaderCrown");
   if (crown && previousCrown && leaderId === S.lastLeaderId) {
