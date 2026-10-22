@@ -7,54 +7,16 @@ const DIRS = [
   [1, -1],  [1, 0],  [1, 1],
 ];
 
-const NEIGHBORS = (() => {
-  const n = [];
-  for (let i = 0; i < 9; i++) {
-    const r = Math.floor(i / 3), c = i % 3;
-    const list = [];
-    for (const [dr, dc] of DIRS) {
-      const nr = r + dr, nc = c + dc;
-      if (nr < 0 || nr > 2 || nc < 0 || nc > 2) continue;
-      list.push(nr * 3 + nc);
-    }
-    n.push(list);
-  }
-  return n;
-})();
-
 /**
- * Exhaustive cell usage for one word: which cells can start a valid path,
- * and which cells appear in ANY valid path. Counts each word once per cell.
+ * Cell usage on the word's deterministic path, shared with validation.
  * Returns { starts: Set<number>, uses: Set<number> } (empty sets = no path).
  */
 export function wordCellUsage(grid, word) {
-  const w = String(word || "").toUpperCase();
-  const g = grid.map((c) => String(c).toUpperCase());
-  const starts = new Set();
-  const uses = new Set();
-  if (w.length < 3 || w.length > 9) return { starts, uses };
-  // Try every start cell; DFS collects all paths (grid is tiny).
-  function dfs(pos, idx, used, path) {
-    if (g[pos] !== w[idx]) return;
-    used.add(pos);
-    path.push(pos);
-    if (idx === w.length - 1) {
-      starts.add(path[0]);
-      for (const c of path) uses.add(c);
-    } else {
-      for (const ni of NEIGHBORS[pos]) {
-        if (used.has(ni)) continue;
-        dfs(ni, idx + 1, used, path);
-      }
-    }
-    used.delete(pos);
-    path.pop();
-  }
-  for (let i = 0; i < 9; i++) {
-    if (g[i] !== w[0]) continue;
-    dfs(i, 0, new Set(), []);
-  }
-  return { starts, uses };
+  const path = findPath(grid, String(word || ""));
+  return {
+    starts: new Set(path ? [path[0]] : []),
+    uses: new Set(path || []),
+  };
 }
 
 /**
@@ -88,7 +50,11 @@ export function hintThresholds(requiredTotal) {
   };
 }
 
-/** Find one valid path (array of cell indexes 0-8) spelling `word` on `grid`, or null. */
+/**
+ * Find the first valid path spelling `word`, or null.
+ * Starts and neighbors are visited in row-major order, so the chosen path is
+ * the lexicographically smallest sequence of cell indexes (0-8).
+ */
 export function findPath(grid, word) {
   const w = word.toUpperCase();
   const g = grid.map((c) => String(c).toUpperCase());

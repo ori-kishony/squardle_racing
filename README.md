@@ -26,7 +26,9 @@ Invite link format: `http://your-host/?room=KINGS`.
 
 The official Squaredle site has **no public API**, but it publishes its puzzle
 bundle (`/api/today-puzzle-config.js`). The server fetches it on startup and
-every five minutes, decoding the real board + word lists. A freshly fetched
+at the 03:00 Pacific daily rollover, and 20 seconds after each hour, decoding
+the real board + word lists. These checks follow the wall clock, independent
+of server startup time. A freshly fetched
 published date takes precedence when it is ahead of the calculated 03:00
 Pacific calendar; a stale saved fetch date never holds the game on yesterday.
 Open tabs and saved sessions move to today's lobby automatically, retrying if

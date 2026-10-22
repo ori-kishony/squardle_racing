@@ -5,9 +5,76 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { puzzleDateAt, puzzleEndsAt } from '../src/calendar.js';
+import { puzzleDateAt, puzzleEndsAt, nextPuzzleRefreshAt } from '../src/calendar.js';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+test('open-race sync discovers a published board even when both dates are cached', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'squaredle-publication-'));
+  const statePath = join(dir, 'publisher.json');
+  const date = puzzleDateAt();
+  const nextDate = new Date(Date.parse(`${date}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+  const baseTime = Date.now();
+  writeFileSync(statePath, JSON.stringify({date, time: baseTime}));
+  const preload = join(dir, 'publisher.mjs');
+  writeFileSync(preload, `
+    import { readFileSync } from 'node:fs';
+    const state = () => JSON.parse(readFileSync(${JSON.stringify(statePath)}, 'utf8'));
+    Date.now = () => state().time;
+    const alpha = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const encode = words => [...Buffer.from(words).toString('base64')].map(c => {
+      const i = alpha.indexOf(c);
+      return i < 0 ? c : alpha[(i + 12) % alpha.length];
+    }).join('');
+    globalThis.fetch = async url => {
+      if (url.includes('today-puzzle-config')) {
+        const puzzles = Object.fromEntries(${JSON.stringify([date, nextDate])}.map(date => [date.replaceAll('-', '/') + '-xp', {
+          board: ['tet', 'ahr', 'lug'], wordScores: encode('the,hug,rug,lug,hurt'), optionalWordScores: '',
+        }]));
+        return new Response('const gPuzzleConfig = ' + JSON.stringify({puzzles}) + ';\\nconst gTodayDateStr = \\'' + state().date.replaceAll('-', '/') + '\\';');
+      }
+      if (url.includes('closure-')) return new Response('var e="' + alpha + '";f=function(r){var n=e.indexOf(r);return-1==n?r:e[(n-12+e.length)%e.length]}');
+      if (url.includes('squaredle.app')) return new Response('<script src="/api/today-puzzle-config.js"></script><script src="closure-test.js"></script>');
+      return new Response('{}', {status: 404});
+    };
+  `);
+  const server = spawn(process.execPath, ['--import', preload, 'src/server.js'], {
+    cwd: new URL('../', import.meta.url),
+    env: {...process.env, PORT:'0', DB_PATH:join(dir, 'race.sqlite3'), OFFICIAL_TODAY_PATH:join(dir, 'official.json'), NO_FETCH:''},
+    stdio:['ignore','pipe','pipe'],
+  });
+  let logs = '';
+  server.stdout.on('data', b => {logs += b;});
+  server.stderr.on('data', b => {logs += b;});
+  try {
+    for (let i = 0; i < 100 && !logs.includes('http://localhost:'); i++) await pause(50);
+    const port = logs.match(/http:\/\/localhost:(\d+)/)?.[1];
+    assert(port && port !== '0', logs);
+    const base = `http://127.0.0.1:${port}`;
+    const joinPlayer = async () => {
+      const r = await fetch(base + '/api/rooms/join', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({roomCode:'PUBLISH', nickname:'Anna'})});
+      assert.equal(r.status, 200);
+      return r.json();
+    };
+    const a = await joinPlayer();
+    assert.equal(a.date, date);
+    // The official site publishes its next board ahead of our calendar.
+    writeFileSync(statePath, JSON.stringify({date:nextDate, time:nextPuzzleRefreshAt(baseTime) + 1}));
+    const view = await (await fetch(`${base}/api/races/${a.raceId}?playerId=${a.playerId}`)).json();
+    assert.equal(view.race.date, date); // Existing race stays pinned.
+    assert.equal(view.race.currentDate, nextDate); // Open tab can reroute.
+    assert.equal((await (await fetch(base + '/api/today')).json()).date, nextDate);
+    const b = await joinPlayer();
+    assert.equal(b.date, nextDate);
+    assert.notEqual(b.raceId, a.raceId);
+  } finally {
+    if (server.exitCode === null && server.signalCode === null) {
+      const exited = new Promise(resolve => server.once('exit', resolve));
+      server.kill();
+      await exited;
+    }
+    rmSync(dir, {recursive:true, force:true});
+  }
+});
 test('real API: stale calendar, daily timeout, individual clocks and results', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'squaredle-races-'));
   const dbPath = join(dir, 'race.sqlite3');

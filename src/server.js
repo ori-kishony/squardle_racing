@@ -15,7 +15,7 @@ import {
   savePuzzle,
 } from "./ingest.js";
 
-import { puzzleEndsAt } from "./calendar.js";
+import { puzzleEndsAt, nextPuzzleRefreshAt } from "./calendar.js";
 
 const COUNTDOWN_MS = 5000;
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -155,21 +155,35 @@ function getOrCreateRace(roomCode, date) {
   return getRace(race.id);
 }
 
-// Resolve the current date before serving it, including right after rollover.
-let lastPuzzleRetry = 0;
-app.use(['/api/today', '/api/rooms/join'], async (req, res, next) => {
+// Refresh at rollover and HH:00:20. Missing-board retries are throttled so
+// publisher outages do not cause a fetch for every client sync.
+const PUZZLE_RETRY_MS = 30000;
+let lastPuzzleRetry = -Infinity;
+let puzzleRefresh;
+function refreshCurrentPuzzle(force = false) {
+  if (puzzleRefresh) return puzzleRefresh;
+  if (!force && now() - lastPuzzleRetry < PUZZLE_RETRY_MS) return Promise.resolve();
+  lastPuzzleRetry = now();
+  puzzleRefresh = refreshOfficialPuzzles()
+    .catch(err => console.warn('daily puzzle refresh failed:', err.message))
+    .finally(() => { puzzleRefresh = null; });
+  return puzzleRefresh;
+}
+function schedulePuzzleRefresh() {
+  setTimeout(() => {
+    schedulePuzzleRefresh();
+    void refreshCurrentPuzzle(true);
+  }, nextPuzzleRefreshAt() - now());
+}
+app.use(['/api/today', '/api/rooms/join', /^\/api\/races\/[^/]+$/], async (req, res, next) => {
   if (!process.env.NO_FETCH) {
     const puzzle = getPuzzle(currentPuzzleDate());
-    if (!puzzle || puzzle.source === 'seed-sample') {
-      if (now() - lastPuzzleRetry >= 30000) {
-        lastPuzzleRetry = now();
-        try { await refreshOfficialPuzzles(); }
-        catch (err) { console.warn('daily puzzle refresh failed:', err.message); }
-      }
-      const fresh = getPuzzle(currentPuzzleDate());
-      if (!fresh || fresh.source === 'seed-sample')
-        return res.status(503).json({ error: 'Today’s official puzzle is still loading. Please retry shortly.' });
-    }
+    const overdue = now() >= nextPuzzleRefreshAt(lastPuzzleRetry);
+    if (overdue || !puzzle || puzzle.source === 'seed-sample')
+      await refreshCurrentPuzzle(overdue);
+    const fresh = getPuzzle(currentPuzzleDate());
+    if (!fresh || fresh.source === 'seed-sample')
+      return res.status(503).json({ error: 'Today’s official puzzle is still loading. Please retry shortly.' });
   }
   next();
 });
@@ -586,15 +600,14 @@ async function boot() {
   // Resolve today's REAL puzzle before anyone can join, so the first race
   // of the day is never pinned to a stale fallback date.
   if (!process.env.NO_FETCH) {
+    lastPuzzleRetry = now();
     try {
       const r = await refreshOfficialPuzzles();
       console.log(`official puzzles: ${r.count}, today=${r.officialToday}`);
     } catch (err) {
       console.warn("official fetch failed, using stored puzzle:", err.message);
     }
-    setInterval(() => {
-      refreshOfficialPuzzles().catch(err => console.warn("official refresh failed:", err.message));
-    }, 5 * 60 * 1000);
+    schedulePuzzleRefresh();
   }
   if (process.env.NO_FETCH) ensurePuzzleFor(currentPuzzleDate());
   const port = Number(process.env.PORT || 3000);

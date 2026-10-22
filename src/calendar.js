@@ -26,3 +26,11 @@ export function puzzleEndsAt(date) {
   endTimes.set(date, lo);
   return lo;
 }
+
+// Align checks to the wall clock, rather than to when the server started.
+export function nextPuzzleRefreshAt(time = Date.now()) {
+  const hour = 60 * 60 * 1000;
+  let hourly = Math.floor(time / hour) * hour + 20000;
+  if (hourly <= time) hourly += hour;
+  return Math.min(hourly, puzzleEndsAt(puzzleDateAt(time)));
+}
