@@ -125,8 +125,17 @@ test('real API: stale calendar, daily timeout, individual clocks and results', a
     assert.equal((await view(a)).race.status, 'live');
     assert.equal((await view(a)).myStartedAt, original);
     await request(`${racePath}/results?playerId=${a.playerId}`, null, 403);
+    const submit = (p, word) => request(`${racePath}/words`, {playerId:p.playerId, word});
+    assert.equal((await submit(a, 'hurt')).firstInRoom, true);
+    assert.equal((await submit(b, 'HURT')).firstInRoom, false);
+    const duplicate = await submit(a, 'HURT');
+    assert.equal(duplicate.reason, 'already');
+    assert.equal(duplicate.firstInRoom, undefined);
+    const invalid = await submit(c, 'ZZZZ');
+    assert.equal(invalid.ok, false);
+    assert.equal(invalid.firstInRoom, undefined);
     for (const [p, words] of [[a, ['UGH', 'LUR', 'RUA', 'RUL']], [b, ['UGH', 'LUR']], [c, ['UGH']]]) {
-      for (const word of words) await request(`${racePath}/words`, {playerId:p.playerId, word});
+      for (const word of words) assert.equal((await submit(p, word)).firstInRoom, p === a);
     }
     const late = await joinPlayer('Late racer');
     const lateStart = (await view(late)).myStartedAt;
@@ -142,6 +151,12 @@ test('real API: stale calendar, daily timeout, individual clocks and results', a
       {word:'RUA', foundBy:1, totalPlayers:4},
     ]);
     const other = await request('/api/rooms/join', {roomCode:'OTHER', nickname:'Other racer'});
+    const otherPeer = await request('/api/rooms/join', {roomCode:'OTHER', nickname:'Other peer'});
+    await request(`/api/races/${other.raceId}/ready`, {playerId:other.playerId, ready:true});
+    await request(`/api/races/${other.raceId}/ready`, {playerId:otherPeer.playerId, ready:true});
+    await request(`/api/races/${other.raceId}/start`, {playerId:other.playerId});
+    db.prepare('UPDATE races SET starts_at = ? WHERE id = ?').run(original, other.raceId);
+    assert.equal((await request(`/api/races/${other.raceId}/words`, {playerId:other.playerId, word:'HURT'})).firstInRoom, true);
     await request(`/api/races/${other.raceId}/giveup`, {playerId:other.playerId});
     assert.deepEqual((await request(`/api/races/${other.raceId}/results?playerId=${other.playerId}`)).popularBonus, []);
     // A slower earlier finisher must not beat a faster late joiner.

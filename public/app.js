@@ -498,9 +498,12 @@ async function submitWord(w, path) {
     S.lastFoundWord = r.word;
     paintPath();
     const points = wordPoints(r.word);
-    toast(r.isBonus ? "Bonus word found!" : `+${points} point${points === 1 ? "" : "s"}`, true);
+    let message = r.isBonus ? "Bonus word found!" : `+${points} point${points === 1 ? "" : "s"}`;
+    if (r.firstInRoom) message += " · 🎉 First!";
+    if (r.finished) message += " · 🏁 100% — waiting for the group…";
+    toast(message, true, r.firstInRoom || r.finished ? 3200 : 1800);
     await sync();
-    if (r.finished) { toast(`🏁 100% — waiting for the group…`); loadResults(); }
+    if (r.finished) loadResults();
   } catch (e) { toast(e.message); }
 }
 

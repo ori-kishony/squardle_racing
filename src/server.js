@@ -396,6 +396,8 @@ app.post("/api/races/:id/words", (req, res) => {
     return res.json({ ok: false, reason: v.reason, accuracy: accuracyFor(done2, rp2?.inv || 0) });
   }
   const t = now();
+  const firstInRoom = !db.prepare("SELECT 1 FROM finds WHERE race_id = ? AND word = ? LIMIT 1")
+    .get(race.id, v.word);
   db.prepare("INSERT INTO finds (race_id, player_id, word, found_at, is_bonus) VALUES (?, ?, ?, ?, ?)")
     .run(race.id, playerId, v.word, t, v.isBonus ? 1 : 0);
   // Finish = 100% of REQUIRED words (bonus excluded).
@@ -414,7 +416,7 @@ app.post("/api/races/:id/words", (req, res) => {
   tickAndBroadcast(race.id);
   const invRow = db.prepare("SELECT invalid_guesses AS inv FROM race_players WHERE race_id = ? AND player_id = ?").get(race.id, playerId);
   const bonusN = db.prepare("SELECT COUNT(*) AS n FROM finds WHERE race_id = ? AND player_id = ? AND is_bonus = 1").get(race.id, playerId).n;
-  res.json({ ok: true, word: v.word, isBonus: v.isBonus, path: v.path, finished, requiredFound: doneCount, requiredTotal: reqSet.size, bonusFound: bonusN, accuracy: accuracyFor(doneCount, invRow?.inv || 0) });
+  res.json({ ok: true, word: v.word, isBonus: v.isBonus, firstInRoom, path: v.path, finished, requiredFound: doneCount, requiredTotal: reqSet.size, bonusFound: bonusN, accuracy: accuracyFor(doneCount, invRow?.inv || 0) });
 });
 
 app.post("/api/races/:id/giveup", (req, res) => {
