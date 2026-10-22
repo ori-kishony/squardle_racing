@@ -124,6 +124,10 @@ test('real API: stale calendar, daily timeout, individual clocks and results', a
     db.prepare('UPDATE races SET starts_at = ? WHERE id = ?').run(original, a.raceId);
     assert.equal((await view(a)).race.status, 'live');
     assert.equal((await view(a)).myStartedAt, original);
+    await request(`${racePath}/results?playerId=${a.playerId}`, null, 403);
+    for (const [p, words] of [[a, ['UGH', 'LUR', 'RUA', 'RUL']], [b, ['UGH', 'LUR']], [c, ['UGH']]]) {
+      for (const word of words) await request(`${racePath}/words`, {playerId:p.playerId, word});
+    }
     const late = await joinPlayer('Late racer');
     const lateStart = (await view(late)).myStartedAt;
     assert(lateStart > original + 59000);
@@ -131,6 +135,15 @@ test('real API: stale calendar, daily timeout, individual clocks and results', a
     assert.equal((await view(late)).myStartedAt, lateStart); // Rejoining does not reset clock.
     for (const p of [a,b,c,late]) await request(`${racePath}/giveup`, {playerId:p.playerId});
     assert.equal((await view(a)).race.status, 'done');
+    const bonusResults = await request(`${racePath}/results?playerId=${a.playerId}`);
+    assert.deepEqual(bonusResults.popularBonus, [
+      {word:'UGH', foundBy:3, totalPlayers:4},
+      {word:'LUR', foundBy:2, totalPlayers:4},
+      {word:'RUA', foundBy:1, totalPlayers:4},
+    ]);
+    const other = await request('/api/rooms/join', {roomCode:'OTHER', nickname:'Other racer'});
+    await request(`/api/races/${other.raceId}/giveup`, {playerId:other.playerId});
+    assert.deepEqual((await request(`/api/races/${other.raceId}/results?playerId=${other.playerId}`)).popularBonus, []);
     // A slower earlier finisher must not beat a faster late joiner.
     db.prepare('UPDATE race_players SET finished_at = ?, gave_up = 0 WHERE player_id = ?').run(original + 30000,a.playerId);
     db.prepare('INSERT INTO king_history (room_code,player_id,race_id,won_at) VALUES (?,?,?,?)').run('CLOCKS',a.playerId,a.raceId,original+30000);

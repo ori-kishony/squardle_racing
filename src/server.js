@@ -483,6 +483,11 @@ app.get("/api/races/:id/results", (req, res) => {
       firstBy: rows[0] ? playersById.get(rows[0].pid)?.acronym : null,
     };
   }).sort((a, b) => b.avgMs - a.avgMs);
+  const popularBonus = db.prepare(`
+    SELECT word, COUNT(DISTINCT player_id) AS foundBy
+    FROM finds WHERE race_id = ? AND is_bonus = 1
+    GROUP BY word ORDER BY foundBy DESC, word ASC LIMIT 3
+  `).all(race.id).map((row) => ({ ...row, totalPlayers: players.length }));
   // Lead-change timeline from find events.
   const events = db.prepare("SELECT player_id AS pid, found_at AS t FROM finds WHERE race_id = ? AND is_bonus = 0 ORDER BY found_at").all(race.id).map(e => ({ ...e, t: e.t - (playersById.get(e.pid)?.startedAt ?? startMs) })).sort((a, b) => a.t - b.t);
   const counts = new Map();
@@ -506,6 +511,7 @@ app.get("/api/races/:id/results", (req, res) => {
       wins: winsByPlayer.get(p.id) || 0,
     })),
     hardest: wordStats.slice(0, Math.min(5, wordStats.length)),
+    popularBonus,
     wordStats,
     leadTimeline: timeline,
     expired: now() >= puzzleEndsAt(race.puzzle_date),

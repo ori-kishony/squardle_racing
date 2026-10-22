@@ -736,6 +736,9 @@ async function loadResults(force) {
     $("hardest").innerHTML = r.hardest
       .map((h) => `<li><button class="wordChip" data-word="${h.word}">${h.word}</button> — avg ${fmtMs(h.avgMs)}${h.firstBy ? `, first: ${h.firstBy}` : ""}</li>`)
       .join("");
+    $("popularBonus").innerHTML = r.popularBonus.length
+      ? r.popularBonus.map((h) => `<li><button class="wordChip bonus" data-word="${escapeHtml(h.word)}">${escapeHtml(h.word)}</button> — found by ${h.foundBy}/${h.totalPlayers} players</li>`).join("")
+      : "<li>No bonus words found yet.</li>";
     const me = r.standings.find((s) => s.playerId === S.playerId);
     $("perfectAccuracyNote").classList.toggle("hidden", !(me?.finishedMs != null && me.accuracy === 1));
     const won = me && me.rank === 1 && me.finishedMs != null;
