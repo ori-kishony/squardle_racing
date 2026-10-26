@@ -463,7 +463,7 @@ app.get("/api/races/:id/results", (req, res) => {
     "SELECT player_id AS playerId, COUNT(*) AS wins FROM king_history WHERE room_code = ? GROUP BY player_id"
   ).all(race.room_code).map((row) => [row.playerId, row.wins]));
   const startMs = race.starts_at;
-  // Per-word difficulty uses average elapsed time across every racer.
+  // Both difficulty metrics use elapsed time across every racer.
   // Players who have not found a word yet contribute their elapsed race time.
   const players = racePlayers(race.id);
   const playersById = new Map(players.map((p) => [p.id, p]));
@@ -472,17 +472,23 @@ app.get("/api/races/:id/results", (req, res) => {
     const rows = db.prepare("SELECT player_id AS pid, found_at AS t FROM finds WHERE race_id = ? AND word = ? ORDER BY found_at").all(race.id, word);
     const foundTimes = new Map(rows.map((r) => [r.pid, Math.max(0, r.t - (playersById.get(r.pid)?.startedAt ?? startMs))]));
     const playerCount = players.length || 1;
-    const totalMs = players.reduce((sum, p) => {
-      if (foundTimes.has(p.id)) return sum + foundTimes.get(p.id);
+    const elapsedTimes = players.map((p) => {
+      if (foundTimes.has(p.id)) return foundTimes.get(p.id);
       const stopAt = p.finishedAt || p.stoppedAt || Math.min(snapshotMs, puzzleEndsAt(race.puzzle_date));
-      return sum + (p.startedAt == null ? 0 : Math.max(0, stopAt - p.startedAt));
-    }, 0);
+      return p.startedAt == null ? 0 : Math.max(0, stopAt - p.startedAt);
+    }).sort((a, b) => a - b);
+    const totalMs = elapsedTimes.reduce((sum, time) => sum + time, 0);
+    const middle = Math.floor(elapsedTimes.length / 2);
+    const medianMs = elapsedTimes.length === 0 ? 0 : elapsedTimes.length % 2
+      ? elapsedTimes[middle]
+      : (elapsedTimes[middle - 1] + elapsedTimes[middle]) / 2;
     return {
       word,
       foundBy: rows.length,
       totalPlayers: playerCount,
       avgMs: Math.round(totalMs / playerCount),
-      firstBy: rows[0] ? playersById.get(rows[0].pid)?.acronym : null,
+      medianMs: Math.round(medianMs),
+      firstBy: rows[0] ? playersById.get(rows[0].pid)?.nickname : null,
     };
   }).sort((a, b) => b.avgMs - a.avgMs);
   const popularBonus = db.prepare(`
@@ -529,7 +535,12 @@ app.get("/api/races/:id/definition", (req, res) => {
   if (!/^[A-Z]{3,9}$/.test(word)) return res.status(400).json({ error: "invalid word" });
   const found = db.prepare("SELECT 1 FROM finds WHERE race_id = ? AND player_id = ? AND word = ?")
     .get(race.id, playerId, word);
-  if (!found) return res.status(403).json({ error: "find the word before viewing its definition" });
+  const me = racePlayers(race.id).find((p) => p.id === playerId);
+  const puzzle = getPuzzle(race.puzzle_date);
+  const resultsUnlocked = me && (race.status === "done" || me.finishedAt || me.gaveUp);
+  const resultWord = puzzle.required.includes(word) || puzzle.bonus.includes(word);
+  if (!found && !(resultsUnlocked && resultWord))
+    return res.status(403).json({ error: "find the word before viewing its definition" });
   const definition = cachedDefinition(word);
   if (!definition) return res.status(404).json({ error: "definition is still loading" });
   res.json({ definition });

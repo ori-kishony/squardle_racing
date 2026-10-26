@@ -46,6 +46,8 @@ const S = {
   lastLeaderId: null,
   editingRoom: false,
   loadingToday: false,
+  hardestMetric: "avgMs",
+  resultWordStats: [],
 };
 $("roomCode").value = S.roomCode;
 if (S.nickname) $("nickname").value = S.nickname;
@@ -725,6 +727,26 @@ function paintRank(order) {
   S.lastLeaderId = leaderId;
 }
 
+function paintHardest() {
+  const median = S.hardestMetric === "medianMs";
+  $("hardestTimeHeading").textContent = median ? "Median time" : "Avg. time";
+  for (const [id, active] of [["hardestAverage", !median], ["hardestMedian", median]]) {
+    $(id).classList.toggle("on", active);
+    $(id).setAttribute("aria-pressed", String(active));
+  }
+  $("hardest").innerHTML = [...S.resultWordStats]
+    .sort((a, b) => b[S.hardestMetric] - a[S.hardestMetric] || a.word.localeCompare(b.word))
+    .slice(0, 5)
+    .map((h) => `<tr><th scope="row"><button class="wordChip" data-word="${escapeHtml(h.word)}">${escapeHtml(h.word)}</button></th><td>${fmtMs(h[S.hardestMetric])}</td><td>${h.firstBy ? escapeHtml(h.firstBy) : "—"}</td></tr>`)
+    .join("");
+}
+for (const [id, metric] of [["hardestAverage", "avgMs"], ["hardestMedian", "medianMs"]]) {
+  $(id).onclick = () => {
+    S.hardestMetric = metric;
+    paintHardest();
+  };
+}
+
 async function loadResults(force) {
   try {
     const raceId = S.raceId;
@@ -734,14 +756,13 @@ async function loadResults(force) {
     $("timeUpNote").classList.toggle("hidden", !r.expired);
     $("todayRaceBtn").classList.toggle("hidden", !r.expired);
     $("standings").innerHTML = r.standings
-      .map((s) => `<li><button class="linklike" data-acronym="${escapeHtml(s.acronym)}"><b>${s.rank}. ${s.acronym}</b></button> ${escapeHtml(s.nickname)} — ${s.count}/${s.requiredTotal} +${s.bonus || 0} bonus · 🎯 ${fmtAcc(s.accuracy)} · 👑 ${s.wins} wins${s.finishedMs != null ? ` in ${fmtMs(s.finishedMs)}` : s.gaveUp ? " (gave up)" : s.timedOut ? " (time’s up)" : " (racing…)"}</li>`)
+      .map((s) => `<tr><td class="resultRank">${s.rank}</td><th scope="row">${escapeHtml(s.nickname)}</th><td>${s.count}/${s.requiredTotal} +${s.bonus || 0}</td><td>${s.wins}</td><td>${fmtAcc(s.accuracy)}</td><td>${s.finishedMs != null ? fmtMs(s.finishedMs) : s.gaveUp ? "Gave up" : s.timedOut ? "Time’s up" : "Racing…"}</td></tr>`)
       .join("");
-    $("hardest").innerHTML = r.hardest
-      .map((h) => `<li><button class="wordChip" data-word="${h.word}">${h.word}</button> — avg ${fmtMs(h.avgMs)}${h.firstBy ? `, first: ${h.firstBy}` : ""}</li>`)
-      .join("");
+    S.resultWordStats = r.wordStats;
+    paintHardest();
     $("popularBonus").innerHTML = r.popularBonus.length
-      ? r.popularBonus.map((h) => `<li><button class="wordChip bonus" data-word="${escapeHtml(h.word)}">${escapeHtml(h.word)}</button> — found by ${h.foundBy}/${h.totalPlayers} players</li>`).join("")
-      : "<li>No bonus words found yet.</li>";
+      ? r.popularBonus.map((h) => `<tr><th scope="row"><button class="wordChip bonus" data-word="${escapeHtml(h.word)}">${escapeHtml(h.word)}</button></th><td>${h.foundBy}/${h.totalPlayers} players</td></tr>`).join("")
+      : '<tr><td colspan="2" class="hint">No bonus words found yet.</td></tr>';
     const me = r.standings.find((s) => s.playerId === S.playerId);
     $("perfectAccuracyNote").classList.toggle("hidden", !(me?.finishedMs != null && me.accuracy === 1));
     const won = me && me.rank === 1 && me.finishedMs != null;

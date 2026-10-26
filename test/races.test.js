@@ -124,6 +124,9 @@ test('real API: stale calendar, daily timeout, individual clocks and results', a
     db.prepare('UPDATE races SET starts_at = ? WHERE id = ?').run(original, a.raceId);
     assert.equal((await view(a)).race.status, 'live');
     assert.equal((await view(a)).myStartedAt, original);
+    db.prepare('INSERT OR REPLACE INTO word_definitions (word, definition, updated_at) VALUES (?, ?, ?)').run('THE', 'The definite article.', Date.now());
+    db.prepare('INSERT OR REPLACE INTO word_definitions (word, definition, updated_at) VALUES (?, ?, ?)').run('UGH', 'An expression of disgust.', Date.now());
+    await request(`${racePath}/definition?playerId=${c.playerId}&word=THE`, null, 403);
     await request(`${racePath}/results?playerId=${a.playerId}`, null, 403);
     const submit = (p, word) => request(`${racePath}/words`, {playerId:p.playerId, word});
     assert.equal((await submit(a, 'hurt')).firstInRoom, true);
@@ -144,7 +147,25 @@ test('real API: stale calendar, daily timeout, individual clocks and results', a
     assert.equal((await view(late)).myStartedAt, lateStart); // Rejoining does not reset clock.
     for (const p of [a,b,c,late]) await request(`${racePath}/giveup`, {playerId:p.playerId});
     assert.equal((await view(a)).race.status, 'done');
+    // A slow outlier affects average difficulty more than median difficulty.
+    for (const [i, p] of [a,b,c,late].entries()) {
+      const started = db.prepare('SELECT started_at FROM race_players WHERE race_id = ? AND player_id = ?').get(a.raceId, p.playerId).started_at;
+      db.prepare('INSERT INTO finds VALUES (?, ?, ?, ?, 0)').run(a.raceId, p.playerId, 'THE', started + [1000,2000,3000,54000][i]);
+    }
     const bonusResults = await request(`${racePath}/results?playerId=${a.playerId}`);
+    const theStats = bonusResults.wordStats.find(w => w.word === 'THE');
+    assert.equal(theStats.avgMs, 15000);
+    assert.equal(theStats.medianMs, 2500);
+    const missingTimes = db.prepare('SELECT stopped_at - started_at AS elapsed FROM race_players WHERE race_id = ?').all(a.raceId).map(p => p.elapsed).sort((a,b) => a-b);
+    const eatStats = bonusResults.wordStats.find(w => w.word === 'EAT');
+    assert.equal(eatStats.foundBy, 0);
+    assert.equal(eatStats.medianMs, Math.round((missingTimes[1] + missingTimes[2]) / 2));
+    assert.equal(bonusResults.wordStats.find(w => w.word === 'HURT').firstBy, 'Anna');
+    // Results allow definitions even for words this player never found.
+    assert((await request(`${racePath}/definition?playerId=${late.playerId}&word=THE`)).definition.length > 0);
+    assert((await request(`${racePath}/definition?playerId=${late.playerId}&word=UGH`)).definition.length > 0);
+    await request(`${racePath}/definition?playerId=outsider&word=THE`, null, 403);
+    await request(`${racePath}/definition?playerId=${late.playerId}&word=ZZZZ`, null, 403);
     assert.deepEqual(bonusResults.popularBonus, [
       {word:'UGH', foundBy:3, totalPlayers:4},
       {word:'LUR', foundBy:2, totalPlayers:4},
@@ -169,6 +190,9 @@ test('real API: stale calendar, daily timeout, individual clocks and results', a
     for (const word of ['THE','HUG','RUG','LUG','HURT','EAT','TEA','HAT','LAT','GUR'])
       await request(`${racePath}/words`, {playerId:after.playerId,word});
     const results = await request(`${racePath}/results?playerId=${after.playerId}`);
+    const fiveTimes = db.prepare("SELECT f.found_at - rp.started_at AS elapsed FROM finds f JOIN race_players rp ON rp.race_id = f.race_id AND rp.player_id = f.player_id WHERE f.race_id = ? AND f.word = 'THE'").all(a.raceId).map(p => p.elapsed).sort((a,b) => a-b);
+    assert.equal(fiveTimes.length, 5);
+    assert.equal(results.wordStats.find(w => w.word === 'THE').medianMs, fiveTimes[2]);
     const me = results.standings.find(p => p.playerId === after.playerId);
     assert.equal(me.rank,1);
     assert.equal((await request('/api/rooms/CLOCKS/king')).king.playerId,after.playerId);

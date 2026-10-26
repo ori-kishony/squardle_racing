@@ -73,7 +73,6 @@
       </div>
     </div>
     <button id="giveUpBtn" class="danger">Give up</button>
-    <div id="defModal" class="hidden"><div id="defCard"><h4 id="defWord"></h4><p id="defText"></p><button id="defClose">Close</button></div></div>
   </section>
 
   <!-- RESULTS -->
@@ -82,11 +81,25 @@
     <p id="perfectAccuracyNote" class="hint hidden" role="status">Suspiciously literate.</p>
     <p id="timeUpNote" class="hint hidden">Time’s up — this puzzle day has ended.</p>
     <button id="todayRaceBtn" class="primary hidden">Join today’s race</button>
-    <ol id="standings"></ol>
+    <table class="resultsTable standingsTable" aria-label="Race standings">
+      <thead><tr><th scope="col" aria-label="Rank">#</th><th scope="col">Player</th><th scope="col" title="Words + bonus">Words</th><th scope="col" aria-label="Wins" title="Wins">👑</th><th scope="col" aria-label="Accuracy" title="Accuracy">🎯</th><th scope="col" aria-label="Time" title="Time">⏱️</th></tr></thead>
+      <tbody id="standings"></tbody>
+    </table>
     <h3>Hardest words</h3>
-    <ul id="hardest"></ul>
+    <div class="wordTabs" role="group" aria-label="Rank hardest words by">
+      <button id="hardestAverage" class="tab on" aria-pressed="true">Average</button>
+      <button id="hardestMedian" class="tab" aria-pressed="false">Median</button>
+    </div>
+    <p class="hint">Tap a word for its definition.</p>
+    <table class="resultsTable" aria-label="Hardest words">
+      <thead><tr><th scope="col">Word</th><th scope="col" id="hardestTimeHeading">Avg. time</th><th scope="col">First finder</th></tr></thead>
+      <tbody id="hardest"></tbody>
+    </table>
     <h3>Most popular bonus words</h3>
-    <ul id="popularBonus"></ul>
+    <table class="resultsTable" aria-label="Most popular bonus words">
+      <thead><tr><th scope="col">Word</th><th scope="col">Found by</th></tr></thead>
+      <tbody id="popularBonus"></tbody>
+    </table>
     <h3>Share</h3>
     <div id="shareCard" class="share"></div>
     <button id="copyBtn">Copy share text</button>
@@ -105,6 +118,8 @@
     </div>
     <div id="adminMsg" class="msg"></div>
   </section>
+
+  <div id="defModal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="defWord"><div id="defCard"><h4 id="defWord"></h4><p id="defText"></p><button id="defClose">Close</button></div></div>
 
   <p class="foot"><a href="#" id="adminLink">Admin: puzzle setup</a> · <span id="connDot" class="dot"></span> <span id="connText">connecting…</span></p>
 </main>
