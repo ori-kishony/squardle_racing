@@ -10,7 +10,7 @@
 <header>
   <h1>⚡ Squaredle Express Racing</h1>
   <div id="kingBanner" class="king hidden"></div>
-  <button id="changeRoomBtn" class="hidden">Change room</button>
+  <button id="changeRoomBtn" class="hidden">Room / profile</button>
 </header>
 
 <main>
@@ -19,6 +19,12 @@
     <h2>Join today's race</h2>
     <label>Room code <input id="roomCode" value="KINGS" maxlength="12" autocomplete="off"></label>
     <label>Nickname <input id="nickname" maxlength="24" placeholder="e.g. Anna" autocomplete="off"></label>
+    <label>Gender <select id="gender">
+      <option value="">Prefer not to say</option>
+      <option value="female">Woman</option>
+      <option value="male">Man</option>
+      <option value="nonbinary">Nonbinary</option>
+    </select></label>
     <button id="joinBtn" class="primary">Join race</button>
     <p id="dailyPuzzleNote" class="hint hidden" role="status" aria-live="polite"></p>
     <p class="hint">Same room code = same group. One race per day. Everyone must press Ready — then we count down and reveal together.</p>
@@ -39,6 +45,7 @@
 
   <!-- RACE -->
   <section id="raceView" class="hidden">
+    <button id="backToResultsBtn" class="primary hidden">Back to results</button>
     <div id="liveRank" class="liverank" title="Live running order (no spoilers)"></div>
     <div id="progressWrap">
       <div class="progressNums">
@@ -78,6 +85,8 @@
   <!-- RESULTS -->
   <section id="resultsView" class="card hidden">
     <h2>Results</h2>
+    <button id="reviewPuzzleBtn">View puzzle</button>
+    <p id="winnerNote" class="king hidden"></p>
     <p id="perfectAccuracyNote" class="hint hidden" role="status">Suspiciously literate.</p>
     <p id="timeUpNote" class="hint hidden">Time’s up — this puzzle day has ended.</p>
     <button id="todayRaceBtn" class="primary hidden">Join today’s race</button>
@@ -99,6 +108,11 @@
     <table class="resultsTable" aria-label="Most popular bonus words">
       <thead><tr><th scope="col">Word</th><th scope="col">Found by</th></tr></thead>
       <tbody id="popularBonus"></tbody>
+    </table>
+    <h3>Most tried non-words</h3>
+    <table class="resultsTable" aria-label="Most tried non-words">
+      <thead><tr><th scope="col">Word</th><th scope="col">Attempts</th><th scope="col">Tried by</th></tr></thead>
+      <tbody id="popularNonWords"></tbody>
     </table>
     <h3>Share</h3>
     <div id="shareCard" class="share"></div>

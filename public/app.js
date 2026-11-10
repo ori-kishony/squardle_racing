@@ -20,6 +20,9 @@ const S = {
   playerId: store.get("playerId") || "",
   raceId: store.get("raceId") || "",
   date: "",
+  gender: "",
+  reviewing: false,
+  resultsUnlocked: false,
   grid: null,
   myWords: new Set(),
   myBonus: new Set(),
@@ -69,13 +72,19 @@ function show(id) {
   if (id) $(id).classList.remove("hidden");
 }
 
+function royalTitle(gender) {
+  return gender === 'female' ? 'Queen' : gender === 'male' ? 'King' : 'Monarch';
+}
+function majesty(gender) {
+  return gender === 'female' ? 'Her Majesty' : gender === 'male' ? 'His Majesty' : 'Their Majesty';
+}
 async function refreshKing() {
   try {
     const k = await api(`/api/rooms/${encodeURIComponent(S.roomCode)}/king`);
     if (k.king) {
       $("kingBanner").classList.remove("hidden");
       $("kingBanner").textContent =
-        `👑 King ${k.king.nickname} — ${k.reignDays}-day reign · ${k.streak}-win streak · ${k.totalWins} total wins`;
+        `👑 ${majesty(k.king.gender)}, ${royalTitle(k.king.gender)} ${k.king.nickname} — ${k.reignDays}-day reign · ${k.streak}-win streak · ${k.totalWins} total wins`;
     } else $("kingBanner").classList.add("hidden");
   } catch { /* no king yet */ }
 }
@@ -83,6 +92,7 @@ async function refreshKing() {
 // ---------- join / lobby ----------
 function useJoinedRace(j) {
   if (S.raceId !== j.raceId) {
+    S.reviewing = false; S.resultsUnlocked = false;
     S.incorrectWordStreak = 0; S.lastMissTaunt = -1;
     S.lastLeaderId = null;
     S.grid = null; S.path = []; S.lastPath = []; S.lastFoundWord = ''; S.previewWord = '';
@@ -91,6 +101,7 @@ function useJoinedRace(j) {
     $('wordText').textContent = ''; $('msg').classList.add('hidden');
     stopCountdown();
   }
+  S.gender = j.gender || ""; $("gender").value = S.gender;
   S.playerId = j.playerId; S.raceId = j.raceId; S.date = j.date;
   store.set('playerId', S.playerId); store.set('raceId', S.raceId);
   saveRoomUser(S.roomCode);
@@ -107,7 +118,7 @@ $("joinBtn").onclick = async () => {
     store.set("nickname", S.nickname);
     const j = await api("/api/rooms/join", {
       method: "POST",
-      body: JSON.stringify({ roomCode: S.roomCode, nickname: S.nickname }),
+      body: JSON.stringify({ roomCode: S.roomCode, nickname: S.nickname, gender: $("gender").value }),
     });
     useJoinedRace(j);
     S.editingRoom = false;
@@ -125,6 +136,7 @@ $("roomCode").addEventListener("input", () => {
 $("changeRoomBtn").onclick = () => {
   $("roomCode").value = S.roomCode;
   $("nickname").value = savedRooms()[S.roomCode]?.nickname || S.nickname;
+  $("gender").value = S.gender;
   S.editingRoom = true;
   show("joinView");
 };
@@ -190,6 +202,8 @@ function render(v) {
   // Live refreshes should not dismiss the room form while the user edits it.
   if (S.editingRoom) return;
   S.date = v.race.date;
+  const profile = v.players.find(p => p.playerId === S.playerId);
+  if (profile) { S.gender = profile.gender || ''; $('gender').value = S.gender; }
   $("lobbyDate").textContent = `· ${v.race.date} · room ${v.race.roomCode}`;
   if (v.race.status === "lobby" || v.race.status === "countdown") {
     show("lobbyView");
@@ -206,7 +220,12 @@ function render(v) {
 
   if (v.race.status === "live" || v.race.status === "done") {
     const resultsUnlocked = v.myFinished || v.race.status === "done";
-    if (!resultsUnlocked) {
+    S.resultsUnlocked = !!resultsUnlocked;
+    if (!resultsUnlocked) S.reviewing = false;
+    $('giveUpBtn').classList.toggle('hidden', !!resultsUnlocked);
+    $('backToResultsBtn').classList.toggle('hidden', !S.reviewing);
+    $('liveRank').classList.toggle('hidden', S.reviewing);
+    if (!resultsUnlocked || S.reviewing) {
       if ($("raceView").classList.contains("hidden")) { S.wordTab = S.wordTab || "today"; }
       show("raceView");
     }
@@ -231,7 +250,7 @@ function render(v) {
     paintHints();
     paintWordList();
     paintProgress();
-    if (resultsUnlocked) loadResults();
+    if (resultsUnlocked && !S.reviewing) loadResults();
   }
   if (v.grid) $("board").classList.remove("blurred");
 }
@@ -400,7 +419,7 @@ function pushCell(cell) {
 }
 document.addEventListener("pointerdown", (e) => {
   const c = cellFromPoint(e.clientX, e.clientY);
-  if (!c || !S.grid || $("board").classList.contains("blurred")) return;
+  if (S.resultsUnlocked || !c || !S.grid || $("board").classList.contains("blurred")) return;
   e.preventDefault();
   dragging = true;
   dragPointerId = e.pointerId;
@@ -747,11 +766,21 @@ for (const [id, metric] of [["hardestAverage", "avgMs"], ["hardestMedian", "medi
   };
 }
 
+$('reviewPuzzleBtn').onclick = async () => {
+  S.reviewing = true;
+  await sync();
+  resizeBoard();
+};
+$('backToResultsBtn').onclick = () => {
+  S.reviewing = false;
+  loadResults();
+};
+
 async function loadResults(force) {
   try {
     const raceId = S.raceId;
     const r = await api(`/api/races/${raceId}/results?playerId=${encodeURIComponent(S.playerId)}`);
-    if (raceId !== S.raceId || S.editingRoom || S.loadingToday) return;
+    if (raceId !== S.raceId || S.editingRoom || S.loadingToday || S.reviewing) return;
     show("resultsView");
     $("timeUpNote").classList.toggle("hidden", !r.expired);
     $("todayRaceBtn").classList.toggle("hidden", !r.expired);
@@ -763,13 +792,18 @@ async function loadResults(force) {
     $("popularBonus").innerHTML = r.popularBonus.length
       ? r.popularBonus.map((h) => `<tr><th scope="row"><button class="wordChip bonus" data-word="${escapeHtml(h.word)}">${escapeHtml(h.word)}</button></th><td>${h.foundBy}/${h.totalPlayers} players</td></tr>`).join("")
       : '<tr><td colspan="2" class="hint">No bonus words found yet.</td></tr>';
+    $('popularNonWords').innerHTML = r.popularNonWords.length
+      ? r.popularNonWords.map(h => `<tr><th scope="row">${escapeHtml(h.word)}</th><td>${h.attempts}</td><td>${h.triedBy}/${h.totalPlayers} players</td></tr>`).join('')
+      : '<tr><td colspan="3" class="hint">No non-words tried yet.</td></tr>';
+    const winner = r.standings.find(s => s.rank === 1 && s.finishedMs != null);
+    $('winnerNote').classList.toggle('hidden', !winner);
+    $('winnerNote').textContent = winner ? `👑 ${majesty(winner.gender)}, ${royalTitle(winner.gender)} ${winner.nickname}` : '';
     const me = r.standings.find((s) => s.playerId === S.playerId);
     $("perfectAccuracyNote").classList.toggle("hidden", !(me?.finishedMs != null && me.accuracy === 1));
     const won = me && me.rank === 1 && me.finishedMs != null;
     $("shareCard").textContent = won
-      ? `👑 I have been crowned King of Squaredle Express ${r.date} in ${fmtMs(me.finishedMs)}! Dethrone me: ${location.origin}?room=${S.roomCode}`
+      ? `👑 I have been crowned ${royalTitle(me.gender)} of Squaredle Express ${r.date} in ${fmtMs(me.finishedMs)}! Dethrone me: ${location.origin}?room=${S.roomCode}`
       : `🏁 I finished ${ordinal(me?.rank)} in the Squaredle Express race ${r.date} (${me?.count}/${me?.requiredTotal}). Race us: ${location.origin}?room=${S.roomCode}`;
-    // keep live board reachable: re-show race link
   } catch { /* not unlocked yet */ }
 }
 $("todayRaceBtn").onclick = () => $("joinBtn").onclick();

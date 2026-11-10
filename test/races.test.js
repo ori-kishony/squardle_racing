@@ -102,6 +102,9 @@ test('real API: stale calendar, daily timeout, individual clocks and results', a
     };
     const joinPlayer = nickname => request('/api/rooms/join', {roomCode:'CLOCKS', nickname});
     const a = await joinPlayer('Anna');
+    assert.equal((await request('/api/rooms/join', {roomCode:'CLOCKS', nickname:'Anna', gender:'female'})).playerId, a.playerId);
+    assert.equal((await joinPlayer('Anna')).gender, 'female');
+    await request('/api/rooms/join', {roomCode:'CLOCKS', nickname:'Anna', gender:'invalid'}, 400);
     const b = await joinPlayer('Bob');
     assert.equal(a.date, puzzleDateAt()); // Thursday's stored pointer is ignored.
     db = new DatabaseSync(dbPath);
@@ -140,6 +143,9 @@ test('real API: stale calendar, daily timeout, individual clocks and results', a
     for (const [p, words] of [[a, ['UGH', 'LUR', 'RUA', 'RUL']], [b, ['UGH', 'LUR']], [c, ['UGH']]]) {
       for (const word of words) assert.equal((await submit(p, word)).firstInRoom, p === a);
     }
+    // Normalize repeated misses, count attempts and distinct players, exclude short/duplicate words.
+    for (const [p, word] of [[a,'zzz'], [a,' ZZZ '], [b,'ZZZ'], [b,'ZZZ'], [b,'ZZZ'], [a,'AAA'], [b,'AAA'], [a,'BBB'], [a,'CCC'], [a,'TH']])
+      await submit(p, word);
     const late = await joinPlayer('Late racer');
     const lateStart = (await view(late)).myStartedAt;
     assert(lateStart > original + 59000);
@@ -153,6 +159,16 @@ test('real API: stale calendar, daily timeout, individual clocks and results', a
       db.prepare('INSERT INTO finds VALUES (?, ?, ?, ?, 0)').run(a.raceId, p.playerId, 'THE', started + [1000,2000,3000,54000][i]);
     }
     const bonusResults = await request(`${racePath}/results?playerId=${a.playerId}`);
+    assert.deepEqual(bonusResults.popularNonWords, [
+      {word:'ZZZ', attempts:5, triedBy:2, totalPlayers:4},
+      {word:'AAA', attempts:2, triedBy:2, totalPlayers:4},
+      {word:'BBB', attempts:1, triedBy:1, totalPlayers:4},
+    ]);
+    assert.equal(bonusResults.standings.find(p => p.playerId === a.playerId).gender, 'female');
+    const review = await view(a);
+    assert.equal(review.grid.length, 9);
+    assert(review.myWords.includes('HURT'));
+    await request(`${racePath}/words`, {playerId:a.playerId, word:'THE'}, 409);
     const theStats = bonusResults.wordStats.find(w => w.word === 'THE');
     assert.equal(theStats.avgMs, 15000);
     assert.equal(theStats.medianMs, 2500);
@@ -180,9 +196,14 @@ test('real API: stale calendar, daily timeout, individual clocks and results', a
     assert.equal((await request(`/api/races/${other.raceId}/words`, {playerId:other.playerId, word:'HURT'})).firstInRoom, true);
     await request(`/api/races/${other.raceId}/giveup`, {playerId:other.playerId});
     assert.deepEqual((await request(`/api/races/${other.raceId}/results?playerId=${other.playerId}`)).popularBonus, []);
+    assert.deepEqual((await request(`/api/races/${other.raceId}/results?playerId=${other.playerId}`)).popularNonWords, []);
     // A slower earlier finisher must not beat a faster late joiner.
     db.prepare('UPDATE race_players SET finished_at = ?, gave_up = 0 WHERE player_id = ?').run(original + 30000,a.playerId);
     db.prepare('INSERT INTO king_history (room_code,player_id,race_id,won_at) VALUES (?,?,?,?)').run('CLOCKS',a.playerId,a.raceId,original+30000);
+    const queen = await request('/api/rooms/CLOCKS/king');
+    assert.equal(queen.king.gender, 'female');
+    assert.equal(queen.totalWins, 1);
+    assert.equal((await request(`${racePath}/results?playerId=${a.playerId}`)).standings.find(p => p.playerId === a.playerId).wins, 1);
     const after = await joinPlayer('After finish');
     assert.equal((await view(after)).race.status, 'live');
     await request(`${racePath}/results?playerId=${after.playerId}`, null, 403);

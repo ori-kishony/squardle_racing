@@ -62,6 +62,13 @@ CREATE TABLE IF NOT EXISTS finds (
   is_bonus INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (race_id, player_id, word)
 );
+CREATE TABLE IF NOT EXISTS invalid_attempts (
+  race_id TEXT NOT NULL,
+  player_id TEXT NOT NULL,
+  word TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (race_id, player_id, word)
+);
 CREATE TABLE IF NOT EXISTS king_history (
   room_code TEXT NOT NULL,
   player_id TEXT NOT NULL,
@@ -93,3 +100,7 @@ export function acronymFor(nickname) {
   const letters = parts.map((p) => p[0]).join("").toUpperCase();
   return (letters || nickname.trim()[0] || "?").slice(0, 3).toUpperCase();
 }
+
+// Preserve existing profiles and crown history when upgrading.
+if (!db.prepare('PRAGMA table_info(players)').all().some(c => c.name === 'gender'))
+  db.exec("ALTER TABLE players ADD COLUMN gender TEXT NOT NULL DEFAULT ''");

@@ -44,7 +44,7 @@ const getRace = (id) => db.prepare("SELECT * FROM races WHERE id = ?").get(id);
 const racePlayers = (raceId) =>
   db
     .prepare(
-      `SELECT p.id, p.nickname, p.acronym, rp.ready, rp.finished_at AS finishedAt, rp.gave_up AS gaveUp, rp.started_at AS startedAt, rp.stopped_at AS stoppedAt,
+      `SELECT p.id, p.nickname, p.acronym, p.gender, rp.ready, rp.finished_at AS finishedAt, rp.gave_up AS gaveUp, rp.started_at AS startedAt, rp.stopped_at AS stoppedAt,
         COALESCE(rp.invalid_guesses, 0) AS invalidGuesses
        FROM race_players rp JOIN players p ON p.id = rp.player_id WHERE rp.race_id = ?`
     )
@@ -198,6 +198,9 @@ app.get("/api/today", (req, res) => {
 app.post("/api/rooms/join", (req, res) => {
   const roomCode = String(req.body?.roomCode || "KINGS").trim().toUpperCase().slice(0, 12) || "KINGS";
   const nickname = String(req.body?.nickname || "").trim().slice(0, 24);
+  const gender = req.body?.gender;
+  if (gender !== undefined && !['', 'male', 'female', 'nonbinary'].includes(gender))
+    return res.status(400).json({ error: "invalid gender" });
   if (!nickname) return res.status(400).json({ error: "nickname required" });
   db.prepare("INSERT INTO rooms (code, name, created_at) VALUES (?, ?, ?) ON CONFLICT(code) DO NOTHING")
     .run(roomCode, roomCode, now());
@@ -207,6 +210,10 @@ app.post("/api/rooms/join", (req, res) => {
     player = { id: randomUUID(), room_code: roomCode, nickname, acronym: acronymFor(nickname), token: randomUUID(), created_at: now() };
     db.prepare("INSERT INTO players (id, room_code, nickname, acronym, token, created_at) VALUES (?, ?, ?, ?, ?, ?)")
       .run(player.id, player.room_code, player.nickname, player.acronym, player.token, player.created_at);
+  }
+  if (gender !== undefined) {
+    db.prepare('UPDATE players SET gender = ? WHERE id = ?').run(gender, player.id);
+    player.gender = gender;
   }
   const date = currentPuzzleDate();
   const race = getOrCreateRace(roomCode, date);
@@ -218,7 +225,7 @@ app.post("/api/rooms/join", (req, res) => {
   if (inserted.changes && current.status === 'done' && now() < puzzleEndsAt(date))
     db.prepare("UPDATE races SET status = 'live' WHERE id = ?").run(race.id);
   tickAndBroadcast(race.id);
-  res.json({ roomCode, playerId: player.id, token: player.token, raceId: race.id, date });
+  res.json({ roomCode, playerId: player.id, token: player.token, gender: player.gender || "", raceId: race.id, date });
 });
 
 function raceView(raceId, playerId) {
@@ -303,7 +310,7 @@ function raceView(raceId, playerId) {
   return {
     race: { id: race.id, roomCode: race.room_code, date: race.puzzle_date, currentDate: currentPuzzleDate(), status: race.status, startsAt: race.starts_at, endsAt: puzzleEndsAt(race.puzzle_date), expired: now() >= puzzleEndsAt(race.puzzle_date), serverNow: now() },
     players: players.map((p) => ({
-      playerId: p.id, nickname: p.nickname, acronym: p.acronym,
+      playerId: p.id, nickname: p.nickname, acronym: p.acronym, gender: p.gender,
       ready: p.ready === 1, finished: !!p.finishedAt, gaveUp: p.gaveUp === 1,
     })),
     grid,
@@ -386,6 +393,9 @@ app.post("/api/races/:id/words", (req, res) => {
     // Only "not-in-list" hurts accuracy (original rule: too-short /
     // already-found / bonus never count against you).
     if (v.reason === "not-in-list") {
+      db.prepare(`INSERT INTO invalid_attempts (race_id, player_id, word) VALUES (?, ?, ?)
+        ON CONFLICT(race_id, player_id, word) DO UPDATE SET attempts = attempts + 1`)
+        .run(race.id, playerId, String(word).trim().toUpperCase());
       db.prepare("UPDATE race_players SET invalid_guesses = COALESCE(invalid_guesses, 0) + 1 WHERE race_id = ? AND player_id = ?")
         .run(race.id, playerId);
     }
@@ -496,6 +506,11 @@ app.get("/api/races/:id/results", (req, res) => {
     FROM finds WHERE race_id = ? AND is_bonus = 1
     GROUP BY word ORDER BY foundBy DESC, word ASC LIMIT 3
   `).all(race.id).map((row) => ({ ...row, totalPlayers: players.length }));
+  const popularNonWords = db.prepare(`
+    SELECT word, SUM(attempts) AS attempts, COUNT(DISTINCT player_id) AS triedBy
+    FROM invalid_attempts WHERE race_id = ?
+    GROUP BY word ORDER BY attempts DESC, word ASC LIMIT 3
+  `).all(race.id).map(row => ({ ...row, totalPlayers: players.length }));
   // Lead-change timeline from find events.
   const events = db.prepare("SELECT player_id AS pid, found_at AS t FROM finds WHERE race_id = ? AND is_bonus = 0 ORDER BY found_at").all(race.id).map(e => ({ ...e, t: e.t - (playersById.get(e.pid)?.startedAt ?? startMs) })).sort((a, b) => a.t - b.t);
   const counts = new Map();
@@ -512,7 +527,7 @@ app.get("/api/races/:id/results", (req, res) => {
   res.json({
     status: race.status,
     standings: order.map((p, i) => ({
-      rank: i + 1, playerId: p.id, nickname: p.nickname, acronym: p.acronym,
+      rank: i + 1, playerId: p.id, nickname: p.nickname, acronym: p.acronym, gender: p.gender,
       count: p.count, bonus: p.bonus, accuracy: p.accuracy,
       requiredTotal: puzzle.required.length,
       finishedMs: p.finishedAt ? p.finishedAt - p.startedAt : null, gaveUp: p.gaveUp === 1, timedOut: !p.finishedAt && !p.gaveUp && !!p.stoppedAt,
@@ -520,6 +535,7 @@ app.get("/api/races/:id/results", (req, res) => {
     })),
     hardest: wordStats.slice(0, Math.min(5, wordStats.length)),
     popularBonus,
+    popularNonWords,
     wordStats,
     leadTimeline: timeline,
     expired: now() >= puzzleEndsAt(race.puzzle_date),
@@ -575,7 +591,7 @@ app.get("/api/rooms/:code/king", (req, res) => {
   }
   const reignDays = Math.max(1, Math.ceil((now() - last.won_at) / 86400000));
   const totalWins = db.prepare("SELECT COUNT(*) AS n FROM king_history WHERE room_code = ? AND player_id = ?").get(code, player.id).n;
-  res.json({ king: { nickname: player.nickname, acronym: player.acronym, playerId: player.id }, streak, totalWins, reignDays, wonAt: last.won_at });
+  res.json({ king: { nickname: player.nickname, acronym: player.acronym, gender: player.gender, playerId: player.id }, streak, totalWins, reignDays, wonAt: last.won_at });
 });
 
 // Admin: manual puzzle entry (fallback) + triggered auto-fetch.

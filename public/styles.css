@@ -24,7 +24,7 @@ main { max-width:520px; margin:0 auto; padding:12px 12px 40px; }
 .card { background:var(--card); border-radius:16px; padding:16px; margin:12px 0; box-shadow:0 2px 8px rgba(60,50,30,.08); border:1px solid var(--line); }
 .hidden { display:none !important; }
 label { display:block; margin:8px 0; }
-input, textarea { width:100%; padding:10px; font-size:1rem; border-radius:10px; border:1px solid #444; background:#fff; color:var(--ink); }
+input, textarea, select { width:100%; padding:10px; font-size:1rem; border-radius:10px; border:1px solid #444; background:#fff; color:var(--ink); }
 button { padding:10px 14px; border-radius:10px; border:0; font:inherit; margin:6px 4px 6px 0; background:var(--chip); color:var(--ink); }
 button.primary { background:var(--acc); color:var(--acc-ink); font-weight:700; }
 button.danger { background:#f7e3e3; color:#a33; }
