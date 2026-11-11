@@ -57,6 +57,9 @@ test('open-race sync discovers a published board even when both dates are cached
     };
     const a = await joinPlayer();
     assert.equal(a.date, date);
+    assert.equal((await fetch(base + '/api/today?mode=regular')).status, 503);
+    assert.equal((await fetch(base + '/api/today')).status, 200);
+    assert.equal((await fetch(`${base}/api/races/${a.raceId}?playerId=${a.playerId}`)).status, 200);
     // The official site publishes its next board ahead of our calendar.
     writeFileSync(statePath, JSON.stringify({date:nextDate, time:nextPuzzleRefreshAt(baseTime) + 1}));
     const view = await (await fetch(`${base}/api/races/${a.raceId}?playerId=${a.playerId}`)).json();

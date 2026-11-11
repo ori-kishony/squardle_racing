@@ -10,15 +10,20 @@ function savedRooms() {
 }
 function saveRoomUser(roomCode) {
   const users = savedRooms();
-  users[roomCode] = { nickname: S.nickname, playerId: S.playerId, raceId: S.raceId };
+  const previous = users[roomCode] || {};
+  const raceIds = { express: previous.raceId || "", ...previous.raceIds, [S.mode]: S.raceId };
+  users[roomCode] = { nickname: S.nickname, playerId: S.playerId, raceIds };
   store.set(roomUsersKey, JSON.stringify(users));
 }
 
+const validMode = mode => mode === "regular" ? "regular" : "express";
 const S = {
+  mode: validMode(store.get("mode")),
+  context: 0,
   roomCode: store.get("roomCode") || "KINGS",
   nickname: store.get("nickname") || "",
   playerId: store.get("playerId") || "",
-  raceId: store.get("raceId") || "",
+  raceId: "",
   date: "",
   gender: "",
   reviewing: false,
@@ -80,11 +85,13 @@ function majesty(gender) {
 }
 async function refreshKing() {
   try {
-    const k = await api(`/api/rooms/${encodeURIComponent(S.roomCode)}/king`);
+    const context = S.context;
+    const k = await api(`/api/rooms/${encodeURIComponent(S.roomCode)}/king?mode=${S.mode}`);
+    if (context !== S.context) return;
     if (k.king) {
       $("kingBanner").classList.remove("hidden");
       $("kingBanner").textContent =
-        `👑 ${majesty(k.king.gender)}, ${royalTitle(k.king.gender)} ${k.king.nickname} — ${k.reignDays}-day reign · ${k.streak}-win streak · ${k.totalWins} total wins`;
+        `👑 ${modeLabel()}: ${majesty(k.king.gender)}, ${royalTitle(k.king.gender)} ${k.king.nickname} — ${k.reignDays}-day reign · ${k.streak}-win streak · ${k.totalWins} total wins`;
     } else $("kingBanner").classList.add("hidden");
   } catch { /* no king yet */ }
 }
@@ -103,30 +110,34 @@ function useJoinedRace(j) {
   }
   S.gender = j.gender || ""; $("gender").value = S.gender;
   S.playerId = j.playerId; S.raceId = j.raceId; S.date = j.date;
-  store.set('playerId', S.playerId); store.set('raceId', S.raceId);
+  store.set('playerId', S.playerId);
+  if (S.mode === 'express') store.set('raceId', S.raceId);
   saveRoomUser(S.roomCode);
   S.loadingToday = false;
   $('dailyPuzzleNote').classList.add('hidden');
 }
 
 $("joinBtn").onclick = async () => {
+  const context = ++S.context;
+  disconnect();
   try {
-    S.roomCode = ($("roomCode").value || "KINGS").toUpperCase();
+    S.roomCode = ($("roomCode").value || "KINGS").trim().toUpperCase().slice(0,12) || "KINGS";
     S.nickname = $("nickname").value.trim();
     if (!S.nickname) return alert("Pick a nickname");
     store.set("roomCode", S.roomCode);
     store.set("nickname", S.nickname);
     const j = await api("/api/rooms/join", {
       method: "POST",
-      body: JSON.stringify({ roomCode: S.roomCode, nickname: S.nickname, gender: $("gender").value }),
+      body: JSON.stringify({ roomCode: S.roomCode, nickname: S.nickname, gender: $("gender").value, mode: S.mode }),
     });
+    if (context !== S.context) return;
     useJoinedRace(j);
     S.editingRoom = false;
     $("changeRoomBtn").classList.remove("hidden");
     connect();
     await sync();
     await refreshKing();
-  } catch (err) { alert(err.message); }
+  } catch (err) { if (context === S.context) { S.editingRoom = true; show("joinView"); alert(err.message); } }
 };
 
 $("roomCode").addEventListener("input", () => {
@@ -137,12 +148,16 @@ $("changeRoomBtn").onclick = () => {
   $("roomCode").value = S.roomCode;
   $("nickname").value = savedRooms()[S.roomCode]?.nickname || S.nickname;
   $("gender").value = S.gender;
+  S.context++;
   S.editingRoom = true;
+  stopCountdown();
   show("joinView");
 };
 
 $("readyBtn").onclick = async () => {
+  const context = S.context;
   const me = (await sync())?.players.find((p) => p.playerId === S.playerId);
+  if (context !== S.context || S.mode !== "express") return;
   await api(`/api/races/${S.raceId}/ready`, {
     method: "POST",
     body: JSON.stringify({ playerId: S.playerId, ready: !(me && me.ready) }),
@@ -161,17 +176,20 @@ $("startBtn").onclick = async () => {
 let syncInFlight;
 function sync() {
   if (!S.raceId) return Promise.resolve(null);
-  if (!syncInFlight) {
-    syncInFlight = syncRace().finally(() => { syncInFlight = null; });
-  }
-  return syncInFlight;
+  const key = `${S.context}:${S.raceId}`;
+  if (syncInFlight?.key === key) return syncInFlight.promise;
+  const pending = { key, promise: syncRace() };
+  syncInFlight = pending;
+  pending.promise.finally(() => { if (syncInFlight === pending) syncInFlight = null; }).catch(() => {});
+  return pending.promise;
 }
 
 async function syncRace() {
+  const context = S.context;
   const raceId = S.raceId;
   let v = await api(`/api/races/${raceId}?playerId=${encodeURIComponent(S.playerId)}`);
-  if (S.raceId !== raceId || S.editingRoom) return null;
-  const currentDate = v.race.currentDate || (await api('/api/today')).date;
+  if (context !== S.context || S.raceId !== raceId || S.editingRoom) return null;
+  const currentDate = v.race.currentDate || (await api(`/api/today?mode=${S.mode}`)).date;
   if (v.race.date !== currentDate) {
     S.loadingToday = true;
     stopCountdown();
@@ -180,19 +198,19 @@ async function syncRace() {
     $('dailyPuzzleNote').classList.remove('hidden');
     try {
       const j = await api('/api/rooms/join', {
-        method: 'POST', body: JSON.stringify({ roomCode: S.roomCode, nickname: S.nickname }),
+        method: 'POST', body: JSON.stringify({ roomCode: S.roomCode, nickname: S.nickname, mode: S.mode }),
       });
-      if (S.raceId !== raceId || S.editingRoom) return null;
+      if (context !== S.context || S.raceId !== raceId || S.editingRoom) return null;
       useJoinedRace(j);
       connect();
       v = await api(`/api/races/${S.raceId}?playerId=${encodeURIComponent(S.playerId)}`);
       void refreshKing();
     } catch (err) {
-      $('dailyPuzzleNote').textContent = `${err.message} Retrying automatically…`;
+      if (context === S.context) $('dailyPuzzleNote').textContent = `${err.message} Retrying automatically…`;
       throw err;
     }
   }
-  if (v.race.id !== S.raceId || S.editingRoom) return null;
+  if (context !== S.context || v.race.id !== S.raceId || S.editingRoom) return null;
   S.serverSkew = v.race.serverNow - Date.now();
   render(v);
   return v;
@@ -280,14 +298,20 @@ function stopCountdown() {
 
 // ---------- board (original-style tiles + drag line) ----------
 function buildBoard(grid) {
-  if (S.grid && S.grid.join("") === grid.join("")) return;
+  if (S.grid && JSON.stringify(S.grid) === JSON.stringify(grid)) return;
   S.grid = grid;
   const b = $("board");
   b.innerHTML = "";
+  const size = Math.sqrt(grid.length);
+  b.style.setProperty("--board-size", size);
+  b.style.setProperty("--board-gap", `${10.5 / size}%`);
+  b.style.setProperty("--letter-scale", 4 / size);
   b.classList.remove("blurred");
   grid.forEach((ch, i) => {
     const btn = document.createElement("button");
-    btn.className = "cell";
+    btn.className = ch ? "cell" : "cell blank";
+    btn.disabled = !ch;
+    if (!ch) btn.setAttribute("aria-hidden", "true");
     btn.dataset.i = i;
     const letter = document.createElement("span");
     letter.className = "letter";
@@ -346,7 +370,8 @@ function paintHints() {
 
 function cellAt(i) { return $("board").children[i]; }
 function adjacent(a, b) {
-  const ar = Math.floor(a / 3), ac = a % 3, br = Math.floor(b / 3), bc = b % 3;
+  const size = Math.sqrt(S.grid.length);
+  const ar = Math.floor(a / size), ac = a % size, br = Math.floor(b / size), bc = b % size;
   return Math.max(Math.abs(ar - br), Math.abs(ac - bc)) === 1;
 }
 
@@ -395,7 +420,7 @@ let dragPointerId = null;
 function cellFromPoint(x, y) {
   const el = document.elementFromPoint(x, y);
   const cell = el && el.closest ? el.closest(".cell") : null;
-  if (!cell) return null;
+  if (!cell || cell.disabled) return null;
 
   // Shrink the effective target inward from each tile edge. This leaves a
   // small dead zone at corners/gaps, making diagonal swipes less likely to
@@ -443,7 +468,7 @@ function endDrag(e) {
   S.previewWord = w;
   S.path = [];
   paintPath();
-  if (w.length >= 3) submitWord(w, S.lastPath);
+  if (w.length >= (S.mode === "regular" ? 4 : 3)) submitWord(w, S.lastPath);
 }
 document.addEventListener("pointerup", endDrag);
 document.addEventListener("pointercancel", () => { dragging = false; dragPointerId = null; S.path = []; paintPath(); });
@@ -496,11 +521,13 @@ function wordPoints(word) {
 }
 
 async function submitWord(w, path) {
+  const context = S.context;
   try {
     const r = await api(`/api/races/${S.raceId}/words`, {
       method: "POST",
       body: JSON.stringify({ playerId: S.playerId, word: w }),
     });
+    if (context !== S.context) return;
     if (!r.ok) {
       if (r.reason === "not-in-list") {
         S.incorrectWordStreak++;
@@ -524,8 +551,8 @@ async function submitWord(w, path) {
     if (r.finished) message += " · 🏁 100% — waiting for the group…";
     toast(message, true, r.firstInRoom || r.finished ? 3200 : 1800);
     await sync();
-    if (r.finished) loadResults();
-  } catch (e) { toast(e.message); }
+    if (context === S.context && r.finished) loadResults();
+  } catch (e) { if (context === S.context) toast(e.message); }
 }
 
 function paintProgress() {
@@ -699,13 +726,16 @@ $("sortAZ").onclick = () => { S.wordSort = "az"; paintWordList(); };
 $("sortFound").onclick = () => { S.wordSort = "found"; paintWordList(); };
 
 async function loadYesterday() {
+  const context = S.context;
   const pane = $("yesterdayPane");
   pane.innerHTML = `<p class="hint">Loading yesterday…</p>`;
   try {
-    const h = await api(`/api/rooms/${encodeURIComponent(S.roomCode)}/history?limit=7`);
+    const h = await api(`/api/rooms/${encodeURIComponent(S.roomCode)}/history?limit=7&mode=${S.mode}`);
+    if (context !== S.context) return;
     const past = (h.races || []).filter((r) => r.date !== S.date).sort((a, b) => (a.date < b.date ? 1 : -1))[0];
     if (!past) { pane.innerHTML = `<p class="hint">No yesterday race in this room yet.</p>`; return; }
     const r = await api(`/api/races/${past.id}/results?playerId=${encodeURIComponent(S.playerId)}`);
+    if (context !== S.context) return;
     const groups = new Map();
     for (const s of r.wordStats || []) {
       const len = s.word.length;
@@ -717,7 +747,7 @@ async function loadYesterday() {
         `<div class="foundGroup"><h4>${len} letters (${groups.get(len).length})</h4><div class="wordChips">${
           groups.get(len).map((s) => `<button class="wordChip" data-word="${s.word}" title="found by ${s.foundBy}/${s.totalPlayers}">${s.word}</button>`).join("")
         }</div></div>`).join("");
-  } catch (e) { pane.innerHTML = `<p class="hint">Yesterday locked until that race ends.</p>`; }
+  } catch (e) { if (context === S.context) pane.innerHTML = `<p class="hint">Yesterday locked until that race ends.</p>`; }
 }
 
 $("giveUpBtn").onclick = async () => {
@@ -777,10 +807,11 @@ $('backToResultsBtn').onclick = () => {
 };
 
 async function loadResults(force) {
+  const context = S.context;
   try {
     const raceId = S.raceId;
     const r = await api(`/api/races/${raceId}/results?playerId=${encodeURIComponent(S.playerId)}`);
-    if (raceId !== S.raceId || S.editingRoom || S.loadingToday || S.reviewing) return;
+    if (context !== S.context || raceId !== S.raceId || S.editingRoom || S.loadingToday || S.reviewing) return;
     show("resultsView");
     $("timeUpNote").classList.toggle("hidden", !r.expired);
     $("todayRaceBtn").classList.toggle("hidden", !r.expired);
@@ -800,10 +831,11 @@ async function loadResults(force) {
     $('winnerNote').textContent = winner ? `👑 ${majesty(winner.gender)}, ${royalTitle(winner.gender)} ${winner.nickname}` : '';
     const me = r.standings.find((s) => s.playerId === S.playerId);
     $("perfectAccuracyNote").classList.toggle("hidden", !(me?.finishedMs != null && me.accuracy === 1));
+    void refreshKing();
     const won = me && me.rank === 1 && me.finishedMs != null;
     $("shareCard").textContent = won
-      ? `👑 I have been crowned ${royalTitle(me.gender)} of Squaredle Express ${r.date} in ${fmtMs(me.finishedMs)}! Dethrone me: ${location.origin}?room=${S.roomCode}`
-      : `🏁 I finished ${ordinal(me?.rank)} in the Squaredle Express race ${r.date} (${me?.count}/${me?.requiredTotal}). Race us: ${location.origin}?room=${S.roomCode}`;
+      ? `👑 I have been crowned ${royalTitle(me.gender)} of ${gameLabel()} ${r.date} in ${fmtMs(me.finishedMs)}! Dethrone me: ${location.origin}?room=${encodeURIComponent(S.roomCode)}&mode=${S.mode}`
+      : `🏁 I finished ${ordinal(me?.rank)} in the ${gameLabel()} ${r.date} (${me?.count}/${me?.requiredTotal}). Race us: ${location.origin}?room=${encodeURIComponent(S.roomCode)}&mode=${S.mode}`;
   } catch { /* not unlocked yet */ }
 }
 $("todayRaceBtn").onclick = () => $("joinBtn").onclick();
@@ -822,15 +854,24 @@ function ordinal(n) {
 }
 
 // ---------- realtime: WS + polling fallback ----------
+function disconnect() {
+  const ws = S.ws;
+  S.ws = null;
+  try { ws?.close(); } catch {}
+  clearInterval(S.timer);
+  stopCountdown();
+}
 function connect() {
-  try { S.ws?.close(); } catch {}
+  disconnect();
+  const context = S.context;
+  const raceId = S.raceId;
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws?raceId=${encodeURIComponent(S.raceId)}`);
   S.ws = ws;
-  ws.onopen = () => { $("connDot").classList.add("on"); $("connText").textContent = "live"; };
-  ws.onclose = () => { $("connDot").classList.remove("on"); $("connText").textContent = "reconnecting…"; };
+  ws.onopen = () => { if (S.ws !== ws) return; $("connDot").classList.add("on"); $("connText").textContent = "live"; };
+  ws.onclose = () => { if (S.ws !== ws) return; $("connDot").classList.remove("on"); $("connText").textContent = "reconnecting…"; };
   ws.onmessage = (ev) => {
-    if (S.ws !== ws || S.loadingToday) return;
+    if (S.ws !== ws || context !== S.context || raceId !== S.raceId || S.loadingToday || S.editingRoom) return;
     try {
       const m = JSON.parse(ev.data);
       S.serverSkew = m.serverNow - Date.now();
@@ -851,43 +892,122 @@ function connect() {
 $("adminLink").onclick = (e) => {
   e.preventDefault();
   show("adminView");
-  api("/api/today").then((t) => {
+  const context = S.context;
+  api(`/api/today?mode=${S.mode}`).then((t) => {
+    if (context !== S.context) return;
+    S.date = t.date;
     $("puzzleSource").textContent = `Today ${t.date}: ${t.requiredCount} required + ${t.bonusCount} bonus (source: ${t.source})`;
-  });
+  }).catch(e => { if (context === S.context) $("puzzleSource").textContent = e.message; });
 };
 $("adminFetch").onclick = async () => {
+  const context = S.context;
   $("adminMsg").textContent = "fetching official site…";
   try {
-    const r = await api("/api/admin/fetch", { method: "POST", body: JSON.stringify({}) });
+    const r = await api("/api/admin/fetch", { method: "POST", body: JSON.stringify({ mode: S.mode }) });
+    if (context !== S.context) return;
     $("adminMsg").textContent = `auto-fetch OK: grid=${r.puzzle.grid.join("")} words=${r.puzzle.required.length}`;
-  } catch (e) { $("adminMsg").textContent = `auto-fetch failed: ${e.message} — paste manually below`; }
+  } catch (e) { if (context === S.context) $("adminMsg").textContent = `auto-fetch failed: ${e.message} — paste manually below`; }
 };
 $("adminSave").onclick = async () => {
-  const grid = $("adminGrid").value.trim().toUpperCase().split("");
+  const context = S.context;
+  const grid = $("adminGrid").value.trim().toUpperCase().split("").map(c => c === "." ? "" : c);
   const required = $("adminRequired").value.split(/[,\s]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
   const bonus = $("adminBonus").value.split(/[,\s]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
   try {
-    await api("/api/admin/puzzles", { method: "POST", body: JSON.stringify({ date: S.date || new Date().toISOString().slice(0, 10), grid, required, bonus }) });
-    $("adminMsg").textContent = "saved ✓ (applies to lobby races; live races keep their grid)";
-  } catch (e) { $("adminMsg").textContent = e.message; }
+    await api("/api/admin/puzzles", { method: "POST", body: JSON.stringify({ date: S.date || new Date().toISOString().slice(0, 10), grid, required, bonus, mode: S.mode }) });
+    if (context !== S.context) return;
+    $("adminMsg").textContent = "saved ✓ for the selected mode";
+  } catch (e) { if (context === S.context) $("adminMsg").textContent = e.message; }
 };
 
-// auto-resume + ?room= invite links
+// Mode selection shares room profiles but keeps each mode's daily progress.
+function modeLabel() { return S.mode === 'regular' ? 'Regular' : 'Express'; }
+function gameLabel() { return S.mode === 'regular' ? 'Squaredle' : 'Squaredle Express'; }
+function paintMode() {
+  $('modeExpress').setAttribute('aria-pressed', String(S.mode === 'express'));
+  $('modeRegular').setAttribute('aria-pressed', String(S.mode === 'regular'));
+  $('appTitle').textContent = S.mode === 'regular' ? 'Squaredle' : '⚡ Squaredle Express Racing';
+  document.title = $('appTitle').textContent;
+  $('joinHeading').textContent = `Join today’s ${modeLabel()} ${S.mode === 'regular' ? 'puzzle' : 'race'}`;
+  $('joinBtn').textContent = S.mode === 'regular' ? 'Open puzzle' : 'Join race';
+  $('joinInstructions').textContent = S.mode === 'regular'
+    ? 'Same room code = same group. Open the puzzle and play immediately. The fastest completion earns the daily crown.'
+    : 'Same room code = same group. Everyone must press Ready — then we count down and reveal together.';
+  $('sourceInstructions').textContent = `Puzzle source: official ${gameLabel()} (auto-fetched daily).`;
+  $('resultsHeading').textContent = `${modeLabel()} results`;
+  $('adminHeading').textContent = `Admin: today’s ${modeLabel()} puzzle`;
+}
+async function switchMode(mode) {
+  if (mode === S.mode) return;
+  const context = ++S.context;
+  disconnect();
+  S.mode = mode;
+  store.set('mode', mode);
+  const url = new URL(location.href);
+  url.searchParams.set('mode', mode);
+  history.replaceState(null, '', url);
+  S.raceId = '';
+  S.loadingToday = false;
+  S.editingRoom = false;
+  dragging = false; dragPointerId = null;
+  defLookupId++;
+  $('defModal').classList.add('hidden');
+  $('kingBanner').classList.add('hidden');
+  $('dailyPuzzleNote').classList.add('hidden');
+  paintMode();
+  show('joinView');
+  if (!S.nickname || !S.playerId) return;
+  $('dailyPuzzleNote').textContent = 'Loading today’s puzzle…';
+  $('dailyPuzzleNote').classList.remove('hidden');
+  try {
+    const j = await api('/api/rooms/join', {
+      method: 'POST', body: JSON.stringify({ roomCode: S.roomCode, nickname: S.nickname, mode }),
+    });
+    if (context !== S.context) return;
+    useJoinedRace(j);
+    connect();
+    await sync();
+    if (context === S.context) void refreshKing();
+  } catch (e) {
+    if (context !== S.context) return;
+    $('dailyPuzzleNote').textContent = e.message;
+  }
+}
+$('modeExpress').onclick = () => switchMode('express');
+$('modeRegular').onclick = () => switchMode('regular');
 const q = new URLSearchParams(location.search);
-if (q.get("room")) { S.roomCode = q.get("room").toUpperCase(); $("roomCode").value = S.roomCode; }
+if (q.has('mode')) { S.mode = validMode(q.get('mode')); store.set('mode', S.mode); }
+if (q.get('room')) { S.roomCode = q.get('room').trim().toUpperCase().slice(0,12); $('roomCode').value = S.roomCode; }
 const initialRoomUser = savedRooms()[S.roomCode];
 if (initialRoomUser) {
   S.nickname = initialRoomUser.nickname || S.nickname;
-  S.playerId = initialRoomUser.playerId || "";
-  S.raceId = initialRoomUser.raceId || "";
-  $("nickname").value = S.nickname;
-} else if (S.roomCode !== store.get("roomCode")) {
-  S.playerId = ""; S.raceId = "";
+  S.playerId = initialRoomUser.playerId || '';
+  S.raceId = initialRoomUser.raceIds?.[S.mode] || (S.mode === 'express' ? initialRoomUser.raceId || '' : '');
+} else if (S.roomCode !== store.get('roomCode')) {
+  S.playerId = '';
+} else if (S.mode === 'express') {
+  S.raceId = store.get('raceId') || '';
 }
+$('nickname').value = S.nickname;
+paintMode();
 (async function resume() {
-  if (!S.playerId || !S.raceId) return;
-  connect();
-  $("changeRoomBtn").classList.remove("hidden");
-  await sync().catch(() => {});
-  await refreshKing();
+  if (!S.playerId || !S.nickname) return;
+  const context = S.context;
+  $('changeRoomBtn').classList.remove('hidden');
+  try {
+    if (!S.raceId) {
+      const j = await api('/api/rooms/join', { method:'POST', body:JSON.stringify({roomCode:S.roomCode, nickname:S.nickname, mode:S.mode}) });
+      if (context !== S.context) return;
+      useJoinedRace(j);
+    } else saveRoomUser(S.roomCode);
+    if (context !== S.context) return;
+    connect();
+    await sync();
+    if (context === S.context) await refreshKing();
+  } catch (e) {
+    if (context === S.context) {
+      $('dailyPuzzleNote').textContent = e.message;
+      $('dailyPuzzleNote').classList.remove('hidden');
+    }
+  }
 })();

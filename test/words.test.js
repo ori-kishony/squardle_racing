@@ -1,7 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { findPath, validateWord, accuracyFor, hurtsAccuracy } from "../src/words.js";
-import { acronymFor } from "../src/db.js";
+process.env.DB_PATH = ":memory:";
+const { acronymFor } = await import("../src/db.js");
 
 const GRID = ["T", "E", "T", "A", "H", "R", "L", "U", "G"];
 

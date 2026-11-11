@@ -104,3 +104,44 @@ export function acronymFor(nickname) {
 // Preserve existing profiles and crown history when upgrading.
 if (!db.prepare('PRAGMA table_info(players)').all().some(c => c.name === 'gender'))
   db.exec("ALTER TABLE players ADD COLUMN gender TEXT NOT NULL DEFAULT ''");
+
+// Rebuild both parent tables atomically, preserving IDs and all child rows.
+// Foreign keys must be disabled outside the transaction while replacing them.
+if (!db.prepare('PRAGMA table_info(puzzles)').all().some(c => c.name === 'mode')) {
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec(`BEGIN IMMEDIATE;
+      CREATE TABLE puzzles_modes (
+        date TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'express' CHECK(mode IN ('express','regular')),
+        grid TEXT NOT NULL,
+        required TEXT NOT NULL,
+        bonus TEXT NOT NULL DEFAULT '[]',
+        source TEXT NOT NULL DEFAULT 'manual',
+        PRIMARY KEY(date, mode)
+      );
+      INSERT INTO puzzles_modes SELECT date, 'express', grid, required, bonus, source FROM puzzles;
+      CREATE TABLE races_modes (
+        id TEXT PRIMARY KEY,
+        room_code TEXT NOT NULL REFERENCES rooms(code),
+        puzzle_date TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'express' CHECK(mode IN ('express','regular')),
+        status TEXT NOT NULL DEFAULT 'lobby',
+        starts_at INTEGER,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY(puzzle_date, mode) REFERENCES puzzles(date, mode),
+        UNIQUE(room_code, puzzle_date, mode)
+      );
+      INSERT INTO races_modes SELECT id, room_code, puzzle_date, 'express', status, starts_at, created_at FROM races;
+      DROP TABLE races;
+      DROP TABLE puzzles;
+      ALTER TABLE puzzles_modes RENAME TO puzzles;
+      ALTER TABLE races_modes RENAME TO races;
+      COMMIT;`);
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}

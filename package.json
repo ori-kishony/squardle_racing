@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node src/server.js",
     "fetch": "node src/ingest.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test:browser": "node test/browser-modes.mjs"
   },
   "keywords": [],
   "author": "",

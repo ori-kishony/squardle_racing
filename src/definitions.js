@@ -44,7 +44,7 @@ async function fetchDefinition(word) {
 // are not flooded with a burst of requests. Each word is persisted as it lands.
 export async function prefetchDefinitions(words) {
   const pending = [...new Set(words.map((word) => String(word).toUpperCase()))]
-    .filter((word) => /^[A-Z]{3,9}$/.test(word) && !cachedDefinition(word) && !inFlight.has(word));
+    .filter((word) => /^[A-Z]{3,}$/.test(word) && !cachedDefinition(word) && !inFlight.has(word));
   pending.forEach((word) => inFlight.add(word));
   let next = 0;
   const workers = Array.from({ length: Math.min(3, pending.length) }, async () => {

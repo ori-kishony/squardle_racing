@@ -1,18 +1,19 @@
 # ⚡ Squaredle Express Racing
 
-Race the daily **Squaredle Express** (3×3) with friends — in the browser, on phone or desktop.
+Play daily **Squaredle Express** and **regular Squaredle** with friends, on phone or desktop.
 
-- One race per day, same official puzzle for everyone
-- Lobby → everyone presses **Ready** → synced **countdown** → grid reveals for all at once
-- Play the grid in-app with drag/swipe gestures (like the original); first to **100% of required words** is crowned **👑 King**
-- **Live ranking shows acronym order only** (no word counts, no spoilers)
-- No timeouts: the race stays open until everyone finishes or gives up
-- Stats: lead changes, hardest words (fewest finders / slowest), first-finder per word
-- Share card: `👑 I have been crowned King of Squaredle Express …`
+- **Express is the default.** It keeps the lobby → Ready → synchronized countdown flow.
+- **Regular opens immediately**, even when playing alone. Select its tab after joining your room/profile.
+- Tabs share your room and nickname, remember your selection, and resume separate progress.
+- Each mode has its own daily standings, crown, cumulative wins, and Yesterday history.
+- The fastest completion of all required words earns the crown; a faster later finisher can take it.
+- Your clock starts on first joining the puzzle and includes time away. Reconnecting or switching modes never resets it.
+- Live rankings show names only. Full stats and word results unlock after finishing, giving up, or daily expiry.
+- Both modes support drag/swipe, progressive hints, definitions, and results review.
 
 ## Run (free, no accounts)
 
-Needs Node 22+ (uses built-in SQLite, no DB to install).
+Use Node 24+ (uses built-in SQLite, no DB to install).
 
 ```bash
 npm install
@@ -20,38 +21,39 @@ npm start        # http://localhost:3000
 ```
 
 Open the URL on your phone (same Wi-Fi) or deploy anywhere Node runs.
-Invite link format: `http://your-host/?room=KINGS`.
+Invite links: `http://your-host/?room=KINGS&mode=express` or `?room=KINGS&mode=regular`. Omitting mode uses Express for new users; returning users resume their saved selection.
 
 ## Daily puzzle
 
 The official Squaredle site has **no public API**, but it publishes its puzzle
 bundle (`/api/today-puzzle-config.js`). The server fetches it on startup and
 at the 03:00 Pacific daily rollover, and 20 seconds after each hour, decoding
-the real board + word lists. These checks follow the wall clock, independent
+both modes’ real boards and word lists. These checks follow the wall clock, independent
 of server startup time. A freshly fetched
 published date takes precedence when it is ahead of the calculated 03:00
 Pacific calendar; a stale saved fetch date never holds the game on yesterday.
-Open tabs and saved sessions move to today's lobby automatically, retrying if
+Open tabs and saved sessions move to today’s puzzle in the selected mode automatically, retrying if
 the new puzzle is temporarily unavailable. If the site format changes, use **Admin: puzzle setup**
-in the footer to paste the 9-letter grid + word lists manually.
+in the footer to enter the selected mode’s grid and word lists manually. Use `.` for a blank cell in a square grid.
 
-The grid is hidden from the API until the countdown hits zero, so early joiners can't peek.
+Express hides its grid until the countdown hits zero. Regular reveals its grid on joining. Automatic refresh never replaces a played puzzle. Existing databases and browser sessions migrate to Express, retaining profiles, progress, results, and crowns.
 
-## How a race goes
+## API modes
 
-1. Everyone joins with room code (default `KINGS`) + nickname.
-2. Everyone presses `I'm Ready`. **All** must be ready (late join drops countdown back to lobby).
-3. 5-second server-synced countdown → `GO`, grid unblurs for everyone.
-4. Live strip shows running order as acronym chips (`1. AK › 2. JM`), no counts.
-5. First to 100% becomes King; completed racers are ranked by finish time. Results show each player's all-time wins in the room alongside their race stats.
-6. Your full results + counts unlock when *you* finish; group table when the race closes.
+`POST /api/rooms/join` accepts `mode` in its JSON body. `/api/today`,
+`/api/rooms/:code/history`, and `/api/rooms/:code/king` accept `?mode=regular`
+or `?mode=express`; omitted modes default to Express. Race URLs use the race’s
+stored mode. Admin save and fetch accept `mode` in their JSON bodies.
 
 ## Tests
 
 ```bash
-npm test          # unit tests (grid paths, validation, race rules)
-bash test-e2e.sh  # full race flow against a temp server + temp DB
+npm test              # unit/API tests, migration, mode isolation, clocks and crowns
+bash test-e2e.sh      # existing Express countdown-to-results smoke test
+npm run test:browser  # desktop/phone Chrome checks, temp DB/profile/screenshots
 ```
+
+Browser checks use `/opt/google/chrome/chrome` by default; set `CHROME_PATH` to another Chrome binary. All checks use isolated databases.
 
 ## Free hosting later
 

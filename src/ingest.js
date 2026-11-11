@@ -1,4 +1,4 @@
-// Daily puzzle ingest: fetches the official Squaredle Express puzzle.
+// Daily puzzle ingest: fetches the official Express and Regular puzzles.
 //
 // The official site has no public API, but it publishes its puzzle data in
 // `/api/today-puzzle-config.js` (referenced from `/?level=xp`). Word lists
@@ -6,6 +6,7 @@
 // and rotation are extracted live from the bundled closure-*.js so this
 // keeps working across redeploys. The daily calendar uses the official
 // 03:00 Pacific rollover; cached config dates cannot freeze today's rooms.
+import { puzzleMode, minimumWordLength } from "./modes.js";
 import { db } from "./db.js";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -41,11 +42,12 @@ function setOfficialToday(date) {
 // Only a successful fetch in this process can override the calculated calendar.
 // The publisher can already be serving its next board; a stale disk pointer
 // must never hold rooms on yesterday when the official fetch is unavailable.
-let fetchedOfficialToday = null;
-export function currentPuzzleDate() {
+const fetchedOfficialToday = new Map();
+export function currentPuzzleDate(mode = "express") {
+  const fetchedDate = fetchedOfficialToday.get(puzzleMode(mode));
   const calendarDate = puzzleDateAt();
-  return fetchedOfficialToday && fetchedOfficialToday > calendarDate
-    ? fetchedOfficialToday : calendarDate;
+  return fetchedDate && fetchedDate > calendarDate
+    ? fetchedDate : calendarDate;
 }
 
 async function get(url) {
@@ -81,7 +83,7 @@ function tryDecode(field, alpha, rot) {
   return Buffer.from(mapped, "base64").toString("utf8");
 }
 
-function parsePuzzleConfig(scriptText, alphas, rot) {
+export function parsePuzzleConfig(scriptText, alphas, rot) {
   const i = scriptText.indexOf("const gPuzzleConfig = ");
   if (i === -1) throw new Error("gPuzzleConfig not found");
   const j = scriptText.indexOf(";\n", i);
@@ -92,30 +94,37 @@ function parsePuzzleConfig(scriptText, alphas, rot) {
     : null;
   const out = [];
   for (const [key, e] of Object.entries(cfg.puzzles || {})) {
-    if (!key.endsWith("-xp") || !Array.isArray(e.board)) continue;
+    if (!/^\d{4}\/\d{2}\/\d{2}(-xp)?$/.test(key) || !Array.isArray(e.board)) continue;
+    const mode = key.endsWith("-xp") ? "express" : "regular";
     const date = key.slice(0, 10).replaceAll("/", "-");
-    const grid = e.board.join("").toUpperCase().split("");
-    if (grid.length !== 9) continue;
+    const size = e.board.length;
+    if (!size || !e.board.every(row => typeof row === "string" && row.length === size)) continue;
+    const grid = e.board.join("").toUpperCase().split("").map(c => /^[A-Z]$/.test(c) ? c : "");
+    if (mode === "express" && grid.length !== 9) continue;
+    const wordPattern = new RegExp(`^[a-z]{${minimumWordLength(mode)},${grid.length}}$`);
     let required = null, bonus = [];
     for (const alpha of alphas) {
       try {
         const req = tryDecode(e.wordScores || "", alpha, rot).split(",").filter(Boolean);
         const bon = tryDecode(e.optionalWordScores || "", alpha, rot).split(",").filter(Boolean);
-        // Sanity: words must be lowercase alpha, 3-9 chars.
-        if (req.length >= 5 && req.every((w) => /^[a-z]{3,9}$/.test(w))) {
+        // Sanity: decoded words must fit the mode and board.
+        if (req.length >= 5 && req.every((w) => wordPattern.test(w))) {
           required = req.map((w) => w.toUpperCase());
-          bonus = bon.filter((w) => /^[a-z]{3,9}$/.test(w)).map((w) => w.toUpperCase());
+          bonus = bon.filter((w) => wordPattern.test(w)).map((w) => w.toUpperCase());
           break;
         }
       } catch { /* try next alphabet */ }
     }
-    if (!required) throw new Error(`could not decode words for ${key}`);
-    out.push({ date, grid, required, bonus });
+    if (!required) {
+      console.warn(`could not decode words for ${key}; keeping this mode's stored puzzle`);
+      continue;
+    }
+    out.push({ date, mode, grid, required, bonus });
   }
   return { puzzles: out, officialToday };
 }
 
-export async function fetchOfficialExpress() {
+export async function fetchOfficialPuzzles() {
   const html = await get("https://squaredle.app/?level=xp");
   const cfgMatch = html.match(/<script[^>]+src="([^"]*today-puzzle-config\.js)"/);
   if (!cfgMatch) throw new Error("today-puzzle-config.js not found in HTML");
@@ -127,19 +136,25 @@ export async function fetchOfficialExpress() {
   return parsePuzzleConfig(cfgText, alphas, rot);
 }
 
-export function savePuzzle({ date, grid, required, bonus = [], source }) {
+export async function fetchOfficialExpress() {
+  const result = await fetchOfficialPuzzles();
+  return { ...result, puzzles: result.puzzles.filter(p => p.mode === "express") };
+}
+
+export function savePuzzle({ date, mode = "express", grid, required, bonus = [], source }) {
+  puzzleMode(mode);
   const problems = required.filter(
     (w) => !findPath(grid.map((c) => String(c).toUpperCase()), w)
   );
   if (problems.length)
     console.warn(`puzzle ${date}: ${problems.length} required words have no grid path: ${problems.join(",")}`);
-  insertPuzzle({ date, grid, required, bonus, source, overwrite: true });
+  insertPuzzle({ date, mode, grid, required, bonus, source, overwrite: true });
   void prefetchDefinitions([...required, ...bonus]);
 }
 
-function insertPuzzle({ date, grid, required, bonus = [], source, overwrite }) {
+function insertPuzzle({ date, mode = "express", grid, required, bonus = [], source, overwrite }) {
   if (!overwrite) {
-    const existing = getPuzzle(date);
+    const existing = getPuzzle(date, mode);
     if (existing) {
       // Never clobber a real/manual puzzle underneath a room that may be racing it.
       if (existing.source !== "seed-sample") return "kept";
@@ -147,19 +162,19 @@ function insertPuzzle({ date, grid, required, bonus = [], source, overwrite }) {
       // (lobby = grid never revealed, no finds possible yet).
       const started = db
         .prepare(
-          `SELECT 1 FROM races WHERE puzzle_date = ? AND status != 'lobby' LIMIT 1`
+          `SELECT 1 FROM races WHERE puzzle_date = ? AND mode = ? AND status != 'lobby' LIMIT 1`
         )
-        .get(date);
+        .get(date, mode);
       if (started) return "kept";
     }
   }
   db.prepare(
-    `INSERT INTO puzzles (date, grid, required, bonus, source)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(date) DO UPDATE SET grid=excluded.grid, required=excluded.required,
+    `INSERT INTO puzzles (date, mode, grid, required, bonus, source)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(date, mode) DO UPDATE SET grid=excluded.grid, required=excluded.required,
        bonus=excluded.bonus, source=excluded.source`
   ).run(
-    date,
+    date, mode,
     JSON.stringify(grid.map((c) => String(c).toUpperCase())),
     JSON.stringify(required.map((w) => w.toUpperCase())),
     JSON.stringify(bonus.map((w) => w.toUpperCase())),
@@ -167,11 +182,12 @@ function insertPuzzle({ date, grid, required, bonus = [], source, overwrite }) {
   );
 }
 
-export function getPuzzle(date) {
-  const row = db.prepare("SELECT * FROM puzzles WHERE date = ?").get(date);
+export function getPuzzle(date, mode = "express") {
+  const row = db.prepare("SELECT * FROM puzzles WHERE date = ? AND mode = ?").get(date, puzzleMode(mode));
   if (!row) return null;
   return {
     date: row.date,
+    mode: row.mode,
     grid: JSON.parse(row.grid),
     required: JSON.parse(row.required),
     bonus: JSON.parse(row.bonus),
@@ -179,8 +195,9 @@ export function getPuzzle(date) {
   };
 }
 
-export function ensurePuzzleFor(date) {
-  if (getPuzzle(date)) return getPuzzle(date);
+export function ensurePuzzleFor(date, mode = "express") {
+  puzzleMode(mode);
+  if (getPuzzle(date, mode)) return getPuzzle(date, mode);
   if (!process.env.NO_FETCH) throw new Error(`Official puzzle for ${date} is not available yet. Please retry shortly.`);
   // Offline fallback so the app is playable before the first successful scrape.
   const seed = {
@@ -190,22 +207,32 @@ export function ensurePuzzleFor(date) {
     bonus: ["RUL", "LUR", "RUA", "UGH"],
     source: "seed-sample",
   };
+  if (mode === "regular") {
+    seed.mode = mode;
+    seed.grid = ["T", "E", "S", "T", "A", "H", "R", "S", "L", "U", "G", "E", "B", "O", "N", "D"];
+    seed.required = ["TEST", "TESTS", "HURT", "HUGE", "LUNG"];
+    seed.bonus = ["HUGS"];
+  }
   savePuzzle(seed);
-  return getPuzzle(date);
+  return getPuzzle(date, mode);
 }
 
 /** Fetch official puzzles and store them. Returns {ok, officialToday?, error?}. */
 async function fetchAndSaveOfficialPuzzles() {
-  const { puzzles, officialToday } = await fetchOfficialExpress();
+  const { puzzles, officialToday } = await fetchOfficialPuzzles();
   let updated = 0;
   for (const p of puzzles) {
     insertPuzzle({ ...p, source: "auto-fetch", overwrite: false });
     updated++;
   }
   if (officialToday) setOfficialToday(officialToday);
-  const today = puzzles.find((p) => p.date === officialToday);
-  if (today) fetchedOfficialToday = officialToday;
-  if (today) void prefetchDefinitions([...today.required, ...today.bonus]);
+  for (const mode of ["express", "regular"]) {
+    const today = puzzles.find(p => p.date === officialToday && p.mode === mode);
+    if (today) {
+      fetchedOfficialToday.set(mode, officialToday);
+      void prefetchDefinitions([...today.required, ...today.bonus]);
+    }
+  }
   return { ok: true, count: updated, officialToday };
 }
 
@@ -221,7 +248,7 @@ export function refreshOfficialPuzzles() {
 if (process.argv[1]?.endsWith("ingest.js")) {
   try {
     const r = await refreshOfficialPuzzles();
-    console.log(`saved ${r.count} express puzzles; official today=${r.officialToday}`);
+    console.log(`saved ${r.count} daily puzzles; official today=${r.officialToday}`);
     for (const d of [r.officialToday, todayDateUTC()]) {
       const p = d && getPuzzle(d);
       if (p) console.log(`${d}: grid=${p.grid.join("")} required=${p.required.length} bonus=${p.bonus.length}`);

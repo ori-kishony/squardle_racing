@@ -1,4 +1,4 @@
-// Shared grid path logic: 3x3 Squaredle Express rules.
+// Shared square-grid path logic for both daily modes.
 // - min length 3, adjacent incl. diagonals, no cell reuse.
 
 const DIRS = [
@@ -25,8 +25,8 @@ export function wordCellUsage(grid, word) {
  * Returns { startCounts, useCounts, wordStarts: Set<number>[], wordUses: Set<number>[] }.
  */
 export function gridHintCounts(grid, required) {
-  const startCounts = Array(9).fill(0);
-  const useCounts = Array(9).fill(0);
+  const startCounts = Array(grid.length).fill(0);
+  const useCounts = Array(grid.length).fill(0);
   const wordStarts = [];
   const wordUses = [];
   for (const word of required || []) {
@@ -53,13 +53,14 @@ export function hintThresholds(requiredTotal) {
 /**
  * Find the first valid path spelling `word`, or null.
  * Starts and neighbors are visited in row-major order, so the chosen path is
- * the lexicographically smallest sequence of cell indexes (0-8).
+ * the lexicographically smallest sequence of cell indexes.
  */
 export function findPath(grid, word) {
   const w = word.toUpperCase();
   const g = grid.map((c) => String(c).toUpperCase());
-  if (w.length < 3 || w.length > 9) return null;
-  const at = (i) => [Math.floor(i / 3), i % 3];
+  const size = Math.sqrt(g.length);
+  if (!Number.isInteger(size) || w.length < 3 || w.length > g.length) return null;
+  const at = (i) => [Math.floor(i / size), i % size];
 
   function dfs(pos, idx, used) {
     if (g[pos] !== w[idx]) return null;
@@ -68,8 +69,8 @@ export function findPath(grid, word) {
     const [r, c] = at(pos);
     for (const [dr, dc] of DIRS) {
       const nr = r + dr, nc = c + dc;
-      if (nr < 0 || nr > 2 || nc < 0 || nc > 2) continue;
-      const ni = nr * 3 + nc;
+      if (nr < 0 || nr >= size || nc < 0 || nc >= size) continue;
+      const ni = nr * size + nc;
       if (used.has(ni)) continue;
       const rest = dfs(ni, idx + 1, used);
       if (rest) return [pos, ...rest];
@@ -77,17 +78,17 @@ export function findPath(grid, word) {
     return null;
   }
 
-  for (let i = 0; i < 9; i++) {
+  for (let i = 0; i < g.length; i++) {
     const p = dfs(i, 0, new Set());
     if (p) return p;
   }
   return null;
 }
 
-export function validateWord({ grid, required, bonus, word, alreadyFound }) {
+export function validateWord({ grid, required, bonus, word, alreadyFound, minLength = 3 }) {
   const w = String(word || "").trim().toUpperCase();
   if (!w) return { ok: false, reason: "empty" };
-  if (w.length < 3) return { ok: false, reason: "too-short" };
+  if (w.length < minLength) return { ok: false, reason: "too-short" };
   const req = new Set(required.map((x) => x.toUpperCase()));
   const bon = new Set((bonus || []).map((x) => x.toUpperCase()));
   const isBonus = bon.has(w) && !req.has(w);

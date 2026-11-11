@@ -1,4 +1,5 @@
 import express from "express";
+import { puzzleMode, minimumWordLength } from "./modes.js";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { randomUUID } from "node:crypto";
@@ -25,6 +26,8 @@ app.set("trust proxy", 1);
 app.use(express.json({ limit: "64kb" }));
 app.use('/api', (req, res, next) => {
   res.set('Cache-Control', 'no-store');
+  try { req.mode = puzzleMode(req.body?.mode ?? req.query.mode); }
+  catch (err) { return res.status(400).json({ error: err.message }); }
   next();
 });
 
@@ -134,23 +137,24 @@ function tickAndBroadcast(raceId) {
 }
 
 // ---------- probabilities: one race per room per day ----------
-function getOrCreateRace(roomCode, date) {
-  ensurePuzzleFor(date);
+function getOrCreateRace(roomCode, date, mode) {
+  ensurePuzzleFor(date, mode);
   let race = db
-    .prepare("SELECT * FROM races WHERE room_code = ? AND puzzle_date = ?")
-    .get(roomCode, date);
+    .prepare("SELECT * FROM races WHERE room_code = ? AND puzzle_date = ? AND mode = ?")
+    .get(roomCode, date, mode);
   if (!race) {
     race = {
       id: randomUUID(),
       room_code: roomCode,
       puzzle_date: date,
-      status: "lobby",
-      starts_at: null,
+      mode,
+      status: mode === "regular" ? "live" : "lobby",
+      starts_at: mode === "regular" ? now() : null,
       created_at: now(),
     };
     db.prepare(
-      "INSERT INTO races (id, room_code, puzzle_date, status, starts_at, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-    ).run(race.id, race.room_code, race.puzzle_date, race.status, race.starts_at, race.created_at);
+      "INSERT INTO races (id, room_code, puzzle_date, status, starts_at, created_at, mode) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run(race.id, race.room_code, race.puzzle_date, race.status, race.starts_at, race.created_at, mode);
   }
   return getRace(race.id);
 }
@@ -177,11 +181,13 @@ function schedulePuzzleRefresh() {
 }
 app.use(['/api/today', '/api/rooms/join', /^\/api\/races\/[^/]+$/], async (req, res, next) => {
   if (!process.env.NO_FETCH) {
-    const puzzle = getPuzzle(currentPuzzleDate());
+    const raceId = new URL(req.originalUrl, 'http://localhost').pathname.match(/^\/api\/races\/([^/]+)$/)?.[1];
+    const mode = raceId ? getRace(raceId)?.mode || req.mode : req.mode;
+    const puzzle = getPuzzle(currentPuzzleDate(mode), mode);
     const overdue = now() >= nextPuzzleRefreshAt(lastPuzzleRetry);
     if (overdue || !puzzle || puzzle.source === 'seed-sample')
       await refreshCurrentPuzzle(overdue);
-    const fresh = getPuzzle(currentPuzzleDate());
+    const fresh = getPuzzle(currentPuzzleDate(mode), mode);
     if (!fresh || fresh.source === 'seed-sample')
       return res.status(503).json({ error: 'Today’s official puzzle is still loading. Please retry shortly.' });
   }
@@ -190,9 +196,10 @@ app.use(['/api/today', '/api/rooms/join', /^\/api\/races\/[^/]+$/], async (req, 
 
 // ---------- API ----------
 app.get("/api/today", (req, res) => {
-  const date = currentPuzzleDate();
-  const p = ensurePuzzleFor(date);
-  res.json({ date, requiredCount: p.required.length, bonusCount: p.bonus.length, source: p.source });
+  const mode = req.mode;
+  const date = currentPuzzleDate(mode);
+  const p = ensurePuzzleFor(date, mode);
+  res.json({ date, mode, requiredCount: p.required.length, bonusCount: p.bonus.length, source: p.source });
 });
 
 app.post("/api/rooms/join", (req, res) => {
@@ -215,8 +222,9 @@ app.post("/api/rooms/join", (req, res) => {
     db.prepare('UPDATE players SET gender = ? WHERE id = ?').run(gender, player.id);
     player.gender = gender;
   }
-  const date = currentPuzzleDate();
-  const race = getOrCreateRace(roomCode, date);
+  const mode = req.mode;
+  const date = currentPuzzleDate(mode);
+  const race = getOrCreateRace(roomCode, date, mode);
   tickRace(race);
   const current = getRace(race.id);
   const startedAt = ['live', 'done'].includes(current.status) ? now() : null;
@@ -225,7 +233,7 @@ app.post("/api/rooms/join", (req, res) => {
   if (inserted.changes && current.status === 'done' && now() < puzzleEndsAt(date))
     db.prepare("UPDATE races SET status = 'live' WHERE id = ?").run(race.id);
   tickAndBroadcast(race.id);
-  res.json({ roomCode, playerId: player.id, token: player.token, gender: player.gender || "", raceId: race.id, date });
+  res.json({ roomCode, playerId: player.id, token: player.token, gender: player.gender || "", raceId: race.id, date, mode });
 });
 
 function raceView(raceId, playerId) {
@@ -233,7 +241,7 @@ function raceView(raceId, playerId) {
   if (!race) return null;
   tickRace(race);
   race = getRace(raceId);
-  const puzzle = getPuzzle(race.puzzle_date);
+  const puzzle = getPuzzle(race.puzzle_date, race.mode);
   const players = racePlayers(raceId);
   const me = players.find((p) => p.id === playerId);
   const myWords = playerId
@@ -278,8 +286,8 @@ function raceView(raceId, playerId) {
     const useUnlocked = requiredFound >= useAt;
     // Counts cover only words you have NOT found yet, so they tick down
     // as you play (like the original). Bonus words never counted.
-    const startCounts = Array(9).fill(0);
-    const useCounts = Array(9).fill(0);
+    const startCounts = Array(puzzle.grid.length).fill(0);
+    const useCounts = Array(puzzle.grid.length).fill(0);
     for (let k = 0; k < reqUpper.length; k++) {
       if (foundSet.has(reqUpper[k])) continue;
       for (const c of wordStarts[k]) startCounts[c]++;
@@ -295,8 +303,8 @@ function raceView(raceId, playerId) {
       useCounts: useUnlocked ? useCounts : null,
     };
     // A square fades once YOU found every required word using it (original rule).
-    faded = Array(9).fill(false);
-    for (let i = 0; i < 9; i++) {
+    faded = Array(puzzle.grid.length).fill(false);
+    for (let i = 0; i < puzzle.grid.length; i++) {
       let uses = 0, found = 0;
       for (let k = 0; k < reqUpper.length; k++) {
         if (wordUses[k].has(i)) {
@@ -308,7 +316,7 @@ function raceView(raceId, playerId) {
     }
   }
   return {
-    race: { id: race.id, roomCode: race.room_code, date: race.puzzle_date, currentDate: currentPuzzleDate(), status: race.status, startsAt: race.starts_at, endsAt: puzzleEndsAt(race.puzzle_date), expired: now() >= puzzleEndsAt(race.puzzle_date), serverNow: now() },
+    race: { id: race.id, roomCode: race.room_code, date: race.puzzle_date, mode: race.mode, currentDate: currentPuzzleDate(race.mode), status: race.status, startsAt: race.starts_at, endsAt: puzzleEndsAt(race.puzzle_date), expired: now() >= puzzleEndsAt(race.puzzle_date), serverNow: now() },
     players: players.map((p) => ({
       playerId: p.id, nickname: p.nickname, acronym: p.acronym, gender: p.gender,
       ready: p.ready === 1, finished: !!p.finishedAt, gaveUp: p.gaveUp === 1,
@@ -341,6 +349,7 @@ app.get("/api/races/:id", (req, res) => {
 app.post("/api/races/:id/ready", (req, res) => {
   let race = getRace(req.params.id);
   if (!race) return res.status(404).json({ error: "race not found" });
+  if (race.mode === "regular") return res.status(409).json({ error: "Regular opens immediately; no ready or countdown step." });
   tickRace(race);
   race = getRace(race.id);
   if (race.status === "live" || race.status === "done")
@@ -357,6 +366,7 @@ app.post("/api/races/:id/ready", (req, res) => {
 app.post("/api/races/:id/start", (req, res) => {
   let race = getRace(req.params.id);
   if (!race) return res.status(404).json({ error: "race not found" });
+  if (race.mode === "regular") return res.status(409).json({ error: "Regular opens immediately; no ready or countdown step." });
   tickRace(race);
   race = getRace(race.id);
   if (race.status !== "lobby")
@@ -384,11 +394,11 @@ app.post("/api/races/:id/words", (req, res) => {
   const rp = db.prepare("SELECT * FROM race_players WHERE race_id = ? AND player_id = ?").get(race.id, playerId);
   if (!rp) return res.status(404).json({ error: "player not in race" });
   if (rp.finished_at || rp.gave_up) return res.status(409).json({ error: "already finished" });
-  const puzzle = getPuzzle(race.puzzle_date);
+  const puzzle = getPuzzle(race.puzzle_date, race.mode);
   const already = new Set(
     db.prepare("SELECT word FROM finds WHERE race_id = ? AND player_id = ?").all(race.id, playerId).map((r) => r.word)
   );
-  const v = validateWord({ grid: puzzle.grid, required: puzzle.required, bonus: puzzle.bonus, word, alreadyFound: already });
+  const v = validateWord({ grid: puzzle.grid, required: puzzle.required, bonus: puzzle.bonus, word, alreadyFound: already, minLength: minimumWordLength(race.mode) });
   if (!v.ok) {
     // Only "not-in-list" hurts accuracy (original rule: too-short /
     // already-found / bonus never count against you).
@@ -420,8 +430,8 @@ app.post("/api/races/:id/words", (req, res) => {
     finished = true;
     const winner = rankOrder(race).find(p => p.finishedAt);
     db.prepare(`INSERT INTO king_history (room_code, player_id, race_id, won_at) VALUES (?, ?, ?, ?)
-      ON CONFLICT(room_code, race_id) DO UPDATE SET player_id = excluded.player_id`)
-      .run(race.room_code, winner.id, race.id, t);
+      ON CONFLICT(room_code, race_id) DO UPDATE SET player_id = excluded.player_id, won_at = excluded.won_at`)
+      .run(race.room_code, winner.id, race.id, winner.finishedAt);
   }
   tickAndBroadcast(race.id);
   const invRow = db.prepare("SELECT invalid_guesses AS inv FROM race_players WHERE race_id = ? AND player_id = ?").get(race.id, playerId);
@@ -449,6 +459,7 @@ app.get("/api/races/:id/rank", (req, res) => {
   const me = racePlayers(race.id).find((p) => p.id === playerId);
   const reveal = race.status === "done" || !!me?.finishedAt || me?.gaveUp === 1;
   res.json({
+    mode: race.mode,
     status: race.status,
     order: order.map((p) => ({
       playerId: p.id, acronym: p.acronym, nickname: p.nickname,
@@ -467,11 +478,11 @@ app.get("/api/races/:id/results", (req, res) => {
   const me = racePlayers(race.id).find((p) => p.id === playerId);
   if (race.status !== "done" && !me?.finishedAt && !me?.gaveUp)
     return res.status(403).json({ error: "results unlock when you finish or the race ends" });
-  const puzzle = getPuzzle(race.puzzle_date);
+  const puzzle = getPuzzle(race.puzzle_date, race.mode);
   const order = rankOrder(race);
   const winsByPlayer = new Map(db.prepare(
-    "SELECT player_id AS playerId, COUNT(*) AS wins FROM king_history WHERE room_code = ? GROUP BY player_id"
-  ).all(race.room_code).map((row) => [row.playerId, row.wins]));
+    "SELECT k.player_id AS playerId, COUNT(*) AS wins FROM king_history k JOIN races r ON r.id = k.race_id WHERE k.room_code = ? AND r.mode = ? GROUP BY k.player_id"
+  ).all(race.room_code, race.mode).map((row) => [row.playerId, row.wins]));
   const startMs = race.starts_at;
   // Both difficulty metrics use elapsed time across every racer.
   // Players who have not found a word yet contribute their elapsed race time.
@@ -525,6 +536,7 @@ app.get("/api/races/:id/results", (req, res) => {
     }
   }
   res.json({
+    mode: race.mode,
     status: race.status,
     standings: order.map((p, i) => ({
       rank: i + 1, playerId: p.id, nickname: p.nickname, acronym: p.acronym, gender: p.gender,
@@ -548,11 +560,11 @@ app.get("/api/races/:id/definition", (req, res) => {
   if (!race) return res.status(404).json({ error: "race not found" });
   const playerId = String(req.query.playerId || "");
   const word = String(req.query.word || "").toUpperCase();
-  if (!/^[A-Z]{3,9}$/.test(word)) return res.status(400).json({ error: "invalid word" });
+  if (!/^[A-Z]{3,}$/.test(word)) return res.status(400).json({ error: "invalid word" });
   const found = db.prepare("SELECT 1 FROM finds WHERE race_id = ? AND player_id = ? AND word = ?")
     .get(race.id, playerId, word);
   const me = racePlayers(race.id).find((p) => p.id === playerId);
-  const puzzle = getPuzzle(race.puzzle_date);
+  const puzzle = getPuzzle(race.puzzle_date, race.mode);
   const resultsUnlocked = me && (race.status === "done" || me.finishedAt || me.gaveUp);
   const resultWord = puzzle.required.includes(word) || puzzle.bonus.includes(word);
   if (!found && !(resultsUnlocked && resultWord))
@@ -568,46 +580,55 @@ app.get("/api/rooms/:code/history", (req, res) => {
   const code = String(req.params.code).toUpperCase();
   const limit = Math.min(14, Math.max(1, Number(req.query.limit || 7)));
   const races = db
-    .prepare("SELECT id, puzzle_date AS date, status, created_at AS createdAt FROM races WHERE room_code = ? ORDER BY puzzle_date DESC LIMIT ?")
-    .all(code, limit);
+    .prepare("SELECT id, puzzle_date AS date, mode, status, created_at AS createdAt FROM races WHERE room_code = ? AND mode = ? ORDER BY puzzle_date DESC LIMIT ?")
+    .all(code, req.mode, limit);
   const out = races.map((r) => ({
     ...r,
     players: db.prepare("SELECT COUNT(*) AS n FROM race_players WHERE race_id = ?").get(r.id).n,
   }));
-  res.json({ roomCode: code, races: out });
+  res.json({ roomCode: code, mode: req.mode, races: out });
 });
 
 app.get("/api/rooms/:code/king", (req, res) => {
   const code = String(req.params.code).toUpperCase();
-  const last = db.prepare("SELECT * FROM king_history WHERE room_code = ? ORDER BY won_at DESC LIMIT 1").get(code);
-  if (!last) return res.json({ king: null });
+  const wins = db.prepare(`SELECT k.* FROM king_history k JOIN races r ON r.id = k.race_id
+    WHERE k.room_code = ? AND r.mode = ? ORDER BY r.puzzle_date DESC, k.won_at DESC`).all(code, req.mode);
+  const last = wins[0];
+  if (!last) return res.json({ mode: req.mode, king: null });
   const player = db.prepare("SELECT * FROM players WHERE id = ?").get(last.player_id);
-  // Streak = consecutive race wins by same player, walking back.
-  const wins = db.prepare("SELECT * FROM king_history WHERE room_code = ? ORDER BY won_at DESC").all(code);
   let streak = 0;
   for (const w of wins) {
     if (w.player_id === last.player_id) streak++;
     else break;
   }
   const reignDays = Math.max(1, Math.ceil((now() - last.won_at) / 86400000));
-  const totalWins = db.prepare("SELECT COUNT(*) AS n FROM king_history WHERE room_code = ? AND player_id = ?").get(code, player.id).n;
-  res.json({ king: { nickname: player.nickname, acronym: player.acronym, gender: player.gender, playerId: player.id }, streak, totalWins, reignDays, wonAt: last.won_at });
+  const totalWins = wins.filter(w => w.player_id === player.id).length;
+  res.json({ mode: req.mode, king: { nickname: player.nickname, acronym: player.acronym, gender: player.gender, playerId: player.id }, streak, totalWins, reignDays, wonAt: last.won_at });
 });
 
 // Admin: manual puzzle entry (fallback) + triggered auto-fetch.
 app.post("/api/admin/puzzles", (req, res) => {
-  const { date, grid, required, bonus } = req.body || {};
-  if (!date || !Array.isArray(grid) || grid.length !== 9 || !Array.isArray(required) || !required.length)
-    return res.status(400).json({ error: "need {date, grid[9], required[]}" });
-  savePuzzle({ date, grid, required, bonus: bonus || [], source: "manual" });
-  res.json({ ok: true, puzzle: getPuzzle(date) });
+  const { date, grid, required, bonus = [] } = req.body || {};
+  const mode = req.mode;
+  const size = Math.sqrt(grid?.length || 0);
+  const minLength = minimumWordLength(mode);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '') || !Array.isArray(grid) || !size || !Number.isInteger(size) ||
+      (mode === 'express' && size !== 3) || !grid.every(c => typeof c === 'string' && /^[a-zA-Z]?$/.test(c)) ||
+      !Array.isArray(required) || !required.length || !Array.isArray(bonus) ||
+      ![...required, ...bonus].every(w => typeof w === 'string' && /^[a-zA-Z]+$/.test(w) && w.length >= minLength && w.length <= grid.length))
+    return res.status(400).json({ error: "need {date, mode, square grid[], required[], bonus[]}; Express requires 3×3" });
+  savePuzzle({ date, mode, grid, required, bonus, source: "manual" });
+  res.json({ ok: true, mode, puzzle: getPuzzle(date, mode) });
 });
 app.post("/api/admin/fetch", async (req, res) => {
   try {
     const r = await refreshOfficialPuzzles();
-    res.json({ ok: true, officialToday: r.officialToday, count: r.count, puzzle: getPuzzle(r.officialToday) });
+    const date = currentPuzzleDate(req.mode);
+    const puzzle = getPuzzle(date, req.mode);
+    if (!puzzle) return res.status(503).json({ error: 'Today’s selected puzzle is not available yet.' });
+    res.json({ ok: true, mode: req.mode, officialToday: r.officialToday, count: r.count, puzzle });
   } catch (err) {
-    res.status(502).json({ ok: false, reason: err.message });
+    res.status(502).json({ ok: false, error: err.message });
   }
 });
 
@@ -619,7 +640,7 @@ function snapshot(raceId) {
   const race = getRace(raceId);
   if (!race) return null;
   const order = rankOrder(race).map((p) => ({ playerId: p.id, acronym: p.acronym, nickname: p.nickname }));
-  return JSON.stringify({ type: "race", status: race.status, startsAt: race.starts_at, serverNow: now(), order });
+  return JSON.stringify({ type: "race", raceId: race.id, mode: race.mode, status: race.status, startsAt: race.starts_at, serverNow: now(), order });
 }
 function broadcast(raceId) {
   const set = socketsByRace.get(raceId);

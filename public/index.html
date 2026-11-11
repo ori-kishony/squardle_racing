@@ -8,15 +8,21 @@
 </head>
 <body>
 <header>
-  <h1>⚡ Squaredle Express Racing</h1>
+  <h1 id="appTitle">⚡ Squaredle Express Racing</h1>
+  <div class="headerControls">
+    <nav class="modeTabs" aria-label="Puzzle mode">
+      <button id="modeExpress" type="button" aria-pressed="true">⚡ Express</button>
+      <button id="modeRegular" type="button" aria-pressed="false">Regular</button>
+    </nav>
+    <button id="changeRoomBtn" class="hidden">Room / profile</button>
+  </div>
   <div id="kingBanner" class="king hidden"></div>
-  <button id="changeRoomBtn" class="hidden">Room / profile</button>
 </header>
 
 <main>
   <!-- JOIN -->
   <section id="joinView" class="card">
-    <h2>Join today's race</h2>
+    <h2 id="joinHeading">Join today’s Express race</h2>
     <label>Room code <input id="roomCode" value="KINGS" maxlength="12" autocomplete="off"></label>
     <label>Nickname <input id="nickname" maxlength="24" placeholder="e.g. Anna" autocomplete="off"></label>
     <label>Gender <select id="gender">
@@ -27,8 +33,8 @@
     </select></label>
     <button id="joinBtn" class="primary">Join race</button>
     <p id="dailyPuzzleNote" class="hint hidden" role="status" aria-live="polite"></p>
-    <p class="hint">Same room code = same group. One race per day. Everyone must press Ready — then we count down and reveal together.</p>
-    <p class="hint">Puzzle source: official Squaredle Express (auto-fetched daily, manual fallback in Admin).</p>
+    <p id="joinInstructions" class="hint">Same room code = same group. One race per day. Everyone must press Ready — then we count down and reveal together.</p>
+    <p id="sourceInstructions" class="hint">Puzzle source: official Squaredle Express (auto-fetched daily, manual fallback in Admin).</p>
   </section>
 
   <!-- LOBBY -->
@@ -84,7 +90,7 @@
 
   <!-- RESULTS -->
   <section id="resultsView" class="card hidden">
-    <h2>Results</h2>
+    <h2 id="resultsHeading">Express results</h2>
     <button id="reviewPuzzleBtn">View puzzle</button>
     <p id="winnerNote" class="king hidden"></p>
     <p id="perfectAccuracyNote" class="hint hidden" role="status">Suspiciously literate.</p>
@@ -121,9 +127,9 @@
 
   <!-- ADMIN -->
   <section id="adminView" class="card hidden">
-    <h2>Admin: today's puzzle</h2>
+    <h2 id="adminHeading">Admin: today’s Express puzzle</h2>
     <p class="hint" id="puzzleSource"></p>
-    <label>Grid (9 letters, row-major) <input id="adminGrid" maxlength="9" placeholder="TET..."></label>
+    <label>Grid (row-major; use . for a blank cell) <input id="adminGrid" placeholder="TET..."></label>
     <label>Required words (comma separated) <textarea id="adminRequired" rows="3"></textarea></label>
     <label>Bonus words (comma separated) <textarea id="adminBonus" rows="2"></textarea></label>
     <div class="row">
